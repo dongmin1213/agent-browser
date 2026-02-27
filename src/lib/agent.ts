@@ -1,11 +1,16 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { StreamEvent } from "@/types/chat";
+import type { McpServerConfig } from "@/types/chat";
 
 export interface AgentQueryParams {
   prompt: string;
   sessionId?: string;
   cwd?: string;
   model?: string;
+  systemPrompt?: string;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  mcpServers?: McpServerConfig[];
 }
 
 export async function* runAgent(
@@ -14,7 +19,7 @@ export async function* runAgent(
   // Unset CLAUDECODE env var to prevent "nested session" error
   delete process.env.CLAUDECODE;
 
-  const { prompt, sessionId, cwd, model } = params;
+  const { prompt, sessionId, cwd, model, systemPrompt, maxTurns, maxBudgetUsd, mcpServers } = params;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const options: Record<string, any> = {
@@ -27,6 +32,7 @@ export async function* runAgent(
       "Grep",
       "WebSearch",
       "WebFetch",
+      "Task",
     ],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
@@ -47,6 +53,34 @@ export async function* runAgent(
       haiku: "claude-haiku-4-5-20251001",
     };
     options.model = modelMap[model] || model;
+  }
+
+  if (systemPrompt) {
+    options.systemPrompt = systemPrompt;
+  }
+
+  if (maxTurns && maxTurns > 0) {
+    options.maxTurns = maxTurns;
+  }
+
+  if (maxBudgetUsd && maxBudgetUsd > 0) {
+    options.maxBudgetUsd = maxBudgetUsd;
+  }
+
+  // MCP servers
+  if (mcpServers && mcpServers.length > 0) {
+    const enabledServers = mcpServers.filter((s) => s.enabled);
+    if (enabledServers.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mcpConfig: Record<string, any> = {};
+      for (const server of enabledServers) {
+        mcpConfig[server.name] = {
+          command: server.command,
+          args: server.args,
+        };
+      }
+      options.mcpServers = mcpConfig;
+    }
   }
 
   try {

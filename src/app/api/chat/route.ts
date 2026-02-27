@@ -6,11 +6,15 @@ export const maxDuration = 300; // 5 minutes
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { message, sessionId, model, cwd } = body as {
+  const { message, sessionId, model, cwd, systemPrompt, maxTurns, maxBudgetUsd, mcpServers } = body as {
     message: string;
     sessionId?: string;
     model?: string;
     cwd?: string;
+    systemPrompt?: string;
+    maxTurns?: number;
+    maxBudgetUsd?: number;
+    mcpServers?: { id: string; name: string; command: string; args: string[]; enabled: boolean }[];
   };
 
   if (!message || typeof message !== "string") {
@@ -30,6 +34,10 @@ export async function POST(request: NextRequest) {
           sessionId: sessionId || undefined,
           model: model || undefined,
           cwd: cwd || undefined,
+          systemPrompt: systemPrompt || undefined,
+          maxTurns: maxTurns || undefined,
+          maxBudgetUsd: maxBudgetUsd || undefined,
+          mcpServers: mcpServers || undefined,
         });
 
         for await (const event of agentStream) {

@@ -9,6 +9,7 @@ import type {
   ToolUseMessage,
   ToolResultMessage,
   ErrorMessage,
+  AppSettings,
 } from "@/types/chat";
 import {
   loadChats,
@@ -21,7 +22,13 @@ import {
   setChatSessionId,
   updateChatTitle,
   updateChatSettings,
+  updateChatCost,
+  branchChat,
+  exportChatAsMarkdown,
+  exportChatAsJSON,
   generateTitle,
+  loadAppSettings,
+  saveAppSettings,
 } from "@/lib/store";
 import Sidebar from "@/components/Sidebar";
 import ChatArea from "@/components/ChatArea";
@@ -29,6 +36,7 @@ import MessageInput from "@/components/MessageInput";
 import TopBar from "@/components/TopBar";
 import ExplorerPanel from "@/components/ExplorerPanel";
 import PreviewPanel from "@/components/PreviewPanel";
+import SettingsModal from "@/components/SettingsModal";
 
 // =========================================
 // NDJSON Stream Reader
@@ -74,6 +82,20 @@ async function readNDJSONStream(
 }
 
 // =========================================
+// Download helper
+// =========================================
+
+function downloadFile(content: string, filename: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// =========================================
 // Main Page Component
 // =========================================
 
@@ -87,9 +109,24 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [defaultCwd, setDefaultCwd] = useState("");
   const [rightPanel, setRightPanel] = useState<"explorer" | "preview" | null>("explorer");
-  const [rightPanelWidth, setRightPanelWidth] = useState(50); // percentage
+  const [rightPanelWidth, setRightPanelWidth] = useState(50);
   const isDraggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // App settings
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadAppSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Apply theme
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", appSettings.theme);
+  }, [appSettings.theme]);
+
+  // Save app settings
+  const handleAppSettingsChange = useCallback((settings: AppSettings) => {
+    setAppSettings(settings);
+    saveAppSettings(settings);
+  }, []);
 
   // Initialize default CWD
   useEffect(() => {
@@ -97,6 +134,53 @@ export default function Home() {
       fetch("/api/files").then(r => r.json()).then(d => { if (d.cwd) setDefaultCwd(d.cwd); });
     }
   }, [defaultCwd]);
+
+  // =========================================
+  // Keyboard Shortcuts
+  // =========================================
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ctrl+N: New chat
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        handleNewChat();
+      }
+      // Ctrl+K: Focus search (sidebar auto-opens)
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        if (sidebarCollapsed) setSidebarCollapsed(false);
+        setSidebarOpen(true);
+        // Focus search input after render
+        setTimeout(() => {
+          const input = document.querySelector('aside input[placeholder*="Search"]') as HTMLInputElement;
+          input?.focus();
+        }, 100);
+      }
+      // Ctrl+,: Settings
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen((p) => !p);
+      }
+      // Ctrl+E: Toggle explorer
+      if ((e.ctrlKey || e.metaKey) && e.key === "e") {
+        e.preventDefault();
+        setRightPanel((p) => p === "explorer" ? null : "explorer");
+      }
+      // Ctrl+Shift+E: Export current chat as markdown
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "E") {
+        e.preventDefault();
+        if (activeChatId) handleExportChat(activeChatId, "md");
+      }
+      // Escape: Close settings modal
+      if (e.key === "Escape") {
+        if (settingsOpen) setSettingsOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarCollapsed, settingsOpen, activeChatId]);
 
   // Drag resizer for right panel
   const handleMouseDown = useCallback(() => {
@@ -175,11 +259,11 @@ export default function Home() {
   // =========================================
 
   const handleNewChat = useCallback(() => {
-    const newChat = createChat("opus", defaultCwd);
+    const newChat = createChat("opus", defaultCwd, appSettings);
     setChats((prev) => [newChat, ...prev]);
     setActiveChatId(newChat.id);
     setInputValue("");
-  }, [defaultCwd]);
+  }, [defaultCwd, appSettings]);
 
   const handleDeleteChat = useCallback(
     (chatId: string) => {
@@ -200,6 +284,31 @@ export default function Home() {
     setInputValue("");
   }, []);
 
+  const handleExportChat = useCallback((chatId: string, format: "md" | "json") => {
+    const chat = chatsRef.current.find((c) => c.id === chatId);
+    if (!chat) return;
+    const safeName = chat.title.replace(/[^a-zA-Z0-9가-힣\s-_]/g, "").trim() || "chat";
+    if (format === "md") {
+      downloadFile(exportChatAsMarkdown(chat), `${safeName}.md`, "text/markdown");
+    } else {
+      downloadFile(exportChatAsJSON(chat), `${safeName}.json`, "application/json");
+    }
+  }, []);
+
+  const handleBranchChat = useCallback((messageIndex: number) => {
+    if (!activeChatId) return;
+    const result = branchChat(chatsRef.current, activeChatId, messageIndex);
+    if (result) {
+      setChats(result.chats);
+      setActiveChatId(result.newChatId);
+    }
+  }, [activeChatId]);
+
+  const handleChatSettingsChange = useCallback((settings: Chat["settings"]) => {
+    if (!activeChatId) return;
+    setChats((prev) => updateChatSettings(prev, activeChatId, { settings }));
+  }, [activeChatId]);
+
   // =========================================
   // Stream Event Handler
   // =========================================
@@ -215,7 +324,6 @@ export default function Home() {
 
       case "text_delta": {
         if (!currentAssistantIdRef.current) {
-          // Create new assistant message
           const newMsg: AssistantTextMessage = {
             id: crypto.randomUUID(),
             role: "assistant",
@@ -226,7 +334,6 @@ export default function Home() {
           currentAssistantIdRef.current = newMsg.id;
           setChats((prev) => addMessageToChat(prev, chatId, newMsg));
         } else {
-          // Append to existing
           const msgId = currentAssistantIdRef.current;
           setChats((prev) =>
             updateMessageInChat(prev, chatId, msgId, (msg) => ({
@@ -254,7 +361,6 @@ export default function Home() {
       }
 
       case "tool_use_start": {
-        // Close any open assistant text
         if (currentAssistantIdRef.current) {
           const msgId = currentAssistantIdRef.current;
           setChats((prev) =>
@@ -328,7 +434,6 @@ export default function Home() {
         };
         setChats((prev) => addMessageToChat(prev, chatId, resultMsg));
 
-        // Mark tool as done
         setChats((prev) =>
           updateMessageByToolUseId(prev, chatId, event.toolUseId, (msg) => ({
             ...msg,
@@ -339,29 +444,26 @@ export default function Home() {
       }
 
       case "turn_done": {
-        // Reset text tracking for next turn
         currentAssistantIdRef.current = null;
         break;
       }
 
       case "result": {
-        // Update chat title from first user message
+        // Update title
         setChats((prev) => {
           const chat = prev.find((c) => c.id === chatId);
           if (chat && chat.title === "New Chat") {
-            const firstUserMsg = chat.messages.find(
-              (m) => m.role === "user"
-            );
+            const firstUserMsg = chat.messages.find((m) => m.role === "user");
             if (firstUserMsg && "content" in firstUserMsg) {
-              return updateChatTitle(
-                prev,
-                chatId,
-                generateTitle(firstUserMsg.content as string)
-              );
+              return updateChatTitle(prev, chatId, generateTitle(firstUserMsg.content as string));
             }
           }
           return prev;
         });
+        // Update cost
+        if (event.costUsd || event.durationMs) {
+          setChats((prev) => updateChatCost(prev, chatId, event.costUsd || 0, event.durationMs || 0));
+        }
         setIsLoading(false);
         break;
       }
@@ -381,16 +483,15 @@ export default function Home() {
   }, []);
 
   // =========================================
-  // Send Message (core)
+  // Send Message
   // =========================================
 
   const doSend = useCallback(async (fullMessage: string, displayText: string) => {
     if (isLoading) return;
 
-    // Ensure we have a chat
     let chatId = activeChatIdRef.current;
     if (!chatId) {
-      const newChat = createChat("opus", defaultCwd);
+      const newChat = createChat("opus", defaultCwd, appSettings);
       setChats((prev) => [newChat, ...prev]);
       setActiveChatId(newChat.id);
       chatId = newChat.id;
@@ -406,15 +507,14 @@ export default function Home() {
     setChats((prev) => addMessageToChat(prev, chatId!, userMsg));
     setIsLoading(true);
 
-    // Reset tracking refs
     currentAssistantIdRef.current = null;
     currentToolUseIdRef.current = null;
     toolInputBufferRef.current = {};
     toolUseMessageIdMapRef.current.clear();
 
-    // Get session ID for resume
     const chat = chatsRef.current.find((c) => c.id === chatId);
     const sessionId = chat?.sessionId || undefined;
+    const chatSettings = chat?.settings;
 
     try {
       const controller = new AbortController();
@@ -423,7 +523,16 @@ export default function Home() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: fullMessage, sessionId, model, cwd: cwd || undefined }),
+        body: JSON.stringify({
+          message: fullMessage,
+          sessionId,
+          model,
+          cwd: cwd || undefined,
+          systemPrompt: chatSettings?.systemPrompt || appSettings.defaultSystemPrompt || undefined,
+          maxTurns: chatSettings?.maxTurns || appSettings.defaultMaxTurns || undefined,
+          maxBudgetUsd: chatSettings?.maxBudgetUsd || appSettings.defaultMaxBudgetUsd || undefined,
+          mcpServers: appSettings.mcpServers.length > 0 ? appSettings.mcpServers : undefined,
+        }),
         signal: controller.signal,
       });
 
@@ -440,8 +549,7 @@ export default function Home() {
       const errMsg: ErrorMessage = {
         id: crypto.randomUUID(),
         role: "error",
-        content:
-          err instanceof Error ? err.message : "Failed to connect to agent",
+        content: err instanceof Error ? err.message : "Failed to connect to agent",
         timestamp: Date.now(),
       };
       setChats((prev) => addMessageToChat(prev, chatId!, errMsg));
@@ -449,7 +557,7 @@ export default function Home() {
     } finally {
       abortControllerRef.current = null;
     }
-  }, [isLoading, handleStreamEvent, model, cwd, defaultCwd]);
+  }, [isLoading, handleStreamEvent, model, cwd, defaultCwd, appSettings]);
 
   const handleSend = useCallback(async () => {
     const message = inputValue.trim();
@@ -494,6 +602,8 @@ export default function Home() {
         onSelectChat={handleSelectChat}
         onNewChat={handleNewChat}
         onDeleteChat={handleDeleteChat}
+        onExportChat={handleExportChat}
+        onOpenSettings={() => setSettingsOpen(true)}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         collapsed={sidebarCollapsed}
@@ -521,6 +631,9 @@ export default function Home() {
               messages={activeChat?.messages || []}
               isLoading={isLoading}
               onSendPrompt={handleSendDirect}
+              onBranchChat={handleBranchChat}
+              chatCost={activeChat?.costUsd}
+              chatDuration={activeChat?.durationMs}
             />
             <MessageInput
               value={inputValue}
@@ -554,6 +667,16 @@ export default function Home() {
           )}
         </div>
       </main>
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        chatSettings={activeChat?.settings || { systemPrompt: "", maxTurns: 0, maxBudgetUsd: 0 }}
+        onChatSettingsChange={handleChatSettingsChange}
+        appSettings={appSettings}
+        onAppSettingsChange={handleAppSettingsChange}
+      />
     </div>
   );
 }

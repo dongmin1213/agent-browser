@@ -46,6 +46,28 @@ export interface ErrorMessage extends BaseMessage {
 }
 
 // =========================================
+// MCP Server Config
+// =========================================
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+}
+
+// =========================================
+// Chat Settings
+// =========================================
+
+export interface ChatSettings {
+  systemPrompt: string;
+  maxTurns: number;        // 0 = unlimited
+  maxBudgetUsd: number;    // 0 = unlimited
+}
+
+// =========================================
 // Chat Type (stored in localStorage)
 // =========================================
 
@@ -58,7 +80,38 @@ export interface Chat {
   messages: UIMessage[];
   model: string;
   cwd: string;
+  // New fields
+  settings: ChatSettings;
+  costUsd: number;
+  durationMs: number;
+  branchedFrom?: { chatId: string; messageIndex: number };
 }
+
+// =========================================
+// App-level Settings (persisted separately)
+// =========================================
+
+export interface AppSettings {
+  theme: "dark" | "light";
+  mcpServers: McpServerConfig[];
+  defaultSystemPrompt: string;
+  defaultMaxTurns: number;
+  defaultMaxBudgetUsd: number;
+}
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  theme: "dark",
+  mcpServers: [],
+  defaultSystemPrompt: "",
+  defaultMaxTurns: 0,
+  defaultMaxBudgetUsd: 0,
+};
+
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+  systemPrompt: "",
+  maxTurns: 0,
+  maxBudgetUsd: 0,
+};
 
 // =========================================
 // Stream Event Types (NDJSON protocol)

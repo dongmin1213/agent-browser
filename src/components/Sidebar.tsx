@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { Chat } from "@/types/chat";
 
 interface SidebarProps {
@@ -8,6 +9,8 @@ interface SidebarProps {
   onSelectChat: (chatId: string) => void;
   onNewChat: () => void;
   onDeleteChat: (chatId: string) => void;
+  onExportChat: (chatId: string, format: "md" | "json") => void;
+  onOpenSettings: () => void;
   isOpen: boolean;
   onClose: () => void;
   collapsed: boolean;
@@ -34,12 +37,27 @@ export default function Sidebar({
   onSelectChat,
   onNewChat,
   onDeleteChat,
+  onExportChat,
+  onOpenSettings,
   isOpen,
   onClose,
   collapsed,
   onToggleCollapse,
 }: SidebarProps) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [exportMenuId, setExportMenuId] = useState<string | null>(null);
+
   const sortedChats = [...chats].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const filteredChats = searchQuery.trim()
+    ? sortedChats.filter((chat) => {
+        const q = searchQuery.toLowerCase();
+        if (chat.title.toLowerCase().includes(q)) return true;
+        return chat.messages.some(
+          (m) => "content" in m && typeof m.content === "string" && m.content.toLowerCase().includes(q)
+        );
+      })
+    : sortedChats;
 
   return (
     <>
@@ -74,7 +92,7 @@ export default function Sidebar({
           )}
           <button
             onClick={onToggleCollapse}
-            className={`flex items-center justify-center w-8 h-8 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors flex-shrink-0 ${collapsed ? "" : ""}`}
+            className="flex items-center justify-center w-8 h-8 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors flex-shrink-0"
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -99,6 +117,16 @@ export default function Sidebar({
                 <path d="M8 3v10M3 8h10" />
               </svg>
             </button>
+            <button
+              onClick={onOpenSettings}
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors"
+              title="Settings"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="8" cy="8" r="2" />
+                <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" />
+              </svg>
+            </button>
             {sortedChats.slice(0, 10).map((chat) => (
               <button
                 key={chat.id}
@@ -118,14 +146,43 @@ export default function Sidebar({
           </div>
         ) : (
           <>
+            {/* Search */}
+            <div className="px-2 py-1.5">
+              <div className="relative">
+                <svg
+                  width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                >
+                  <circle cx="7" cy="7" r="4.5" />
+                  <path d="M10.5 10.5L14 14" />
+                </svg>
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search chats... (Ctrl+K)"
+                  className="w-full bg-bg-primary border border-border rounded-md pl-7 pr-2 py-1.5 text-[11px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M2 2l6 6M8 2l-6 6" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Chat list */}
             <div className="flex-1 overflow-y-auto py-1">
-              {sortedChats.length === 0 ? (
+              {filteredChats.length === 0 ? (
                 <p className="text-text-muted text-xs text-center py-8">
-                  No conversations yet
+                  {searchQuery ? "No results found" : "No conversations yet"}
                 </p>
               ) : (
-                sortedChats.map((chat) => (
+                filteredChats.map((chat) => (
                   <div
                     key={chat.id}
                     onClick={() => {
@@ -134,7 +191,7 @@ export default function Sidebar({
                     }}
                     className={`
                       group flex items-center px-2 py-2 mx-1.5 rounded-lg cursor-pointer
-                      transition-colors text-xs
+                      transition-colors text-xs relative
                       ${
                         chat.id === activeChatId
                           ? "bg-bg-tertiary text-text-primary"
@@ -152,18 +209,66 @@ export default function Sidebar({
                           </>
                         )}
                         {formatTime(chat.updatedAt)}
+                        {chat.costUsd > 0 && (
+                          <>
+                            <span>&middot;</span>
+                            <span>${chat.costUsd.toFixed(4)}</span>
+                          </>
+                        )}
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteChat(chat.id);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 flex-shrink-0 ml-1 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-error hover:bg-error/10 transition-all text-[10px]"
-                      title="Delete"
-                    >
-                      &#x2715;
-                    </button>
+                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 flex-shrink-0 ml-1">
+                      {/* Export button */}
+                      <div className="relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExportMenuId(exportMenuId === chat.id ? null : chat.id);
+                          }}
+                          className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-all"
+                          title="Export"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            <path d="M8 2v8M4 6l4-4 4 4M2 12h12" />
+                          </svg>
+                        </button>
+                        {exportMenuId === chat.id && (
+                          <div className="absolute right-0 top-6 bg-bg-secondary border border-border rounded-md shadow-lg z-10 py-1 min-w-[100px]">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onExportChat(chat.id, "md");
+                                setExportMenuId(null);
+                              }}
+                              className="w-full px-3 py-1 text-[11px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                            >
+                              Markdown
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onExportChat(chat.id, "json");
+                                setExportMenuId(null);
+                              }}
+                              className="w-full px-3 py-1 text-[11px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                            >
+                              JSON
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {/* Delete button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteChat(chat.id);
+                        }}
+                        className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-error hover:bg-error/10 transition-all text-[10px]"
+                        title="Delete"
+                      >
+                        &#x2715;
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
@@ -171,9 +276,16 @@ export default function Sidebar({
 
             {/* Footer */}
             <div className="p-2 border-t border-border">
-              <div className="text-[10px] text-text-muted text-center">
-                Claude Agent SDK Chat v0.1
-              </div>
+              <button
+                onClick={onOpenSettings}
+                className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors text-xs"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <circle cx="8" cy="8" r="2" />
+                  <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" />
+                </svg>
+                Settings
+              </button>
             </div>
           </>
         )}

@@ -10,6 +10,8 @@ import remarkGfm from "remark-gfm";
 interface MessageBubbleProps {
   message: UIMessage;
   toolResults: Map<string, ToolResultMessage>;
+  messageIndex?: number;
+  onBranch?: (messageIndex: number) => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -44,18 +46,68 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function BranchButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1 text-[11px] text-text-muted hover:text-text-primary transition-colors py-1"
+      title="Branch from here"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <circle cx="4" cy="4" r="2" />
+        <circle cx="12" cy="12" r="2" />
+        <circle cx="12" cy="4" r="2" />
+        <path d="M4 6v2c0 2 2 4 4 4h2" />
+        <path d="M4 4h6" />
+      </svg>
+      Branch
+    </button>
+  );
+}
+
+// Detect image URLs in text
+function renderContentWithImages(content: string) {
+  const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const parts: (string | { alt: string; src: string })[] = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = imageRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(content.slice(lastIndex, match.index));
+    }
+    parts.push({ alt: match[1], src: match[2] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex));
+  }
+
+  return parts;
+}
+
 export default function MessageBubble({
   message,
   toolResults,
+  messageIndex,
+  onBranch,
 }: MessageBubbleProps) {
   // ---- User message ----
   if (message.role === "user") {
     return (
-      <div className="flex justify-end mb-4">
-        <div className="max-w-[80%] bg-accent-dim/30 border border-accent/20 rounded-2xl rounded-br-md px-4 py-2.5">
-          <p className="text-text-primary whitespace-pre-wrap text-sm leading-relaxed">
-            {message.content}
-          </p>
+      <div className="flex justify-end mb-4 group/msg">
+        <div className="max-w-[80%]">
+          <div className="bg-accent-dim/30 border border-accent/20 rounded-2xl rounded-br-md px-4 py-2.5">
+            <p className="text-text-primary whitespace-pre-wrap text-sm leading-relaxed">
+              {message.content}
+            </p>
+          </div>
+          {/* Branch button on hover */}
+          {onBranch && messageIndex !== undefined && (
+            <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity mt-1 flex justify-end">
+              <BranchButton onClick={() => onBranch(messageIndex)} />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -89,6 +141,19 @@ export default function MessageBubble({
                 pre({ children }) {
                   return <>{children}</>;
                 },
+                img({ src, alt }) {
+                  return (
+                    <span className="block my-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={src}
+                        alt={alt || "image"}
+                        className="max-w-full rounded-lg border border-border"
+                        loading="lazy"
+                      />
+                    </span>
+                  );
+                },
               }}
             >
               {message.content}
@@ -97,10 +162,13 @@ export default function MessageBubble({
               <span className="inline-block w-2 h-[18px] bg-accent/80 rounded-sm animate-blink ml-0.5 align-middle" />
             )}
           </div>
-          {/* Copy button - appears on hover */}
+          {/* Action buttons - appear on hover */}
           {!message.isStreaming && message.content && (
-            <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity mt-1">
+            <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity mt-1 flex items-center gap-3">
               <CopyButton text={message.content} />
+              {onBranch && messageIndex !== undefined && (
+                <BranchButton onClick={() => onBranch(messageIndex)} />
+              )}
             </div>
           )}
         </div>

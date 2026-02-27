@@ -18,6 +18,22 @@
   --color-warning: #f59e0b;
 }
 
+/* Light theme overrides */
+[data-theme="light"] {
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f5f5f5;
+  --color-bg-tertiary: #e8e8e8;
+  --color-bg-hover: #ebebeb;
+  --color-border: #d4d4d8;
+  --color-border-light: #c0c0c8;
+  --color-text-primary: #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #a1a1aa;
+  --color-accent: #7c3aed;
+  --color-accent-hover: #6d28d9;
+  --color-accent-dim: #5b21b6;
+}
+
 html, body {
   height: 100%;
   margin: 0;
@@ -75,6 +91,14 @@ code {
   border-radius: 0 !important;
   padding: 12px 16px !important;
   margin: 0 !important;
+}
+
+/* Light theme code adjustments */
+[data-theme="light"] pre {
+  background-color: #f8f8f8 !important;
+}
+[data-theme="light"] :not(pre) > code {
+  background-color: #e8e8ec;
 }
 
 /* Markdown styles */

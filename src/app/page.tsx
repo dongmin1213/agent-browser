@@ -86,7 +86,7 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [defaultCwd, setDefaultCwd] = useState("");
-  const [rightPanel, setRightPanel] = useState<"explorer" | "preview" | null>(null);
+  const [rightPanel, setRightPanel] = useState<"explorer" | "preview" | null>("explorer");
   const [rightPanelWidth, setRightPanelWidth] = useState(50); // percentage
   const isDraggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);

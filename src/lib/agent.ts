@@ -36,6 +36,8 @@ export async function* runAgent(
     ],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
+    // Enable real token-level streaming
+    includePartialMessages: true,
   };
 
   if (sessionId) {
@@ -83,44 +85,115 @@ export async function* runAgent(
     }
   }
 
+  // Track streaming state to avoid duplicate processing
+  let isStreamingText = false;
+  // Map of content block index → tool_use_id for streaming tool inputs
+  const toolUseBlockMap = new Map<number, { toolUseId: string; toolName: string }>();
+
   try {
     for await (const message of query({ prompt, options })) {
-      // 1. System init -> capture session_id
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const msg = message as any;
 
+      // 1. System init -> capture session_id
       if (msg.type === "system" && msg.subtype === "init") {
         yield { type: "session_init", sessionId: msg.session_id };
         continue;
       }
 
-      // 2. Assistant message with content blocks
-      if (msg.type === "assistant") {
-        const content = msg.message?.content || msg.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === "text" && block.text) {
-              yield { type: "text_delta", text: block.text };
-              yield { type: "text_done" };
-            } else if (block.type === "tool_use") {
+      // 2. Real-time streaming events (token-level)
+      if (msg.type === "stream_event") {
+        const event = msg.event;
+        if (!event) continue;
+
+        switch (event.type) {
+          case "content_block_start": {
+            const block = event.content_block;
+            if (block?.type === "text") {
+              isStreamingText = true;
+            } else if (block?.type === "tool_use") {
+              toolUseBlockMap.set(event.index, {
+                toolUseId: block.id,
+                toolName: block.name,
+              });
               yield {
                 type: "tool_use_start",
                 toolName: block.name,
                 toolUseId: block.id,
               };
-              yield {
-                type: "tool_use_done",
-                toolUseId: block.id,
-                input: block.input || {},
-              };
+            }
+            break;
+          }
+
+          case "content_block_delta": {
+            const delta = event.delta;
+            if (delta?.type === "text_delta" && delta.text) {
+              yield { type: "text_delta", text: delta.text };
+            } else if (delta?.type === "input_json_delta" && delta.partial_json) {
+              yield { type: "tool_use_input_delta", partialJson: delta.partial_json };
+            }
+            break;
+          }
+
+          case "content_block_stop": {
+            if (isStreamingText) {
+              yield { type: "text_done" };
+              isStreamingText = false;
+            }
+            // Tool use content_block_stop is handled by the full assistant message
+            break;
+          }
+        }
+        continue;
+      }
+
+      // 3. Full assistant message (after streaming completes for this turn)
+      if (msg.type === "assistant") {
+        const content = msg.message?.content || msg.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "text" && block.text) {
+              // Text was already streamed via stream_event, skip
+              // But if somehow not streamed, emit as fallback
+              if (!isStreamingText && toolUseBlockMap.size === 0) {
+                // Fallback: emit complete text if stream_events weren't received
+                yield { type: "text_delta", text: block.text };
+                yield { type: "text_done" };
+              }
+            } else if (block.type === "tool_use") {
+              // Emit tool_use_done with complete input
+              const tracked = toolUseBlockMap.get(
+                content.indexOf(block)
+              );
+              if (tracked) {
+                yield {
+                  type: "tool_use_done",
+                  toolUseId: tracked.toolUseId,
+                  input: block.input || {},
+                };
+              } else {
+                // Tool wasn't tracked from streaming, emit full lifecycle
+                yield {
+                  type: "tool_use_start",
+                  toolName: block.name,
+                  toolUseId: block.id,
+                };
+                yield {
+                  type: "tool_use_done",
+                  toolUseId: block.id,
+                  input: block.input || {},
+                };
+              }
             }
           }
         }
+        // Reset per-turn state
+        toolUseBlockMap.clear();
         yield { type: "turn_done" };
         continue;
       }
 
-      // 3. User messages with tool results (SDK internal)
+      // 4. User messages with tool results (SDK internal)
       if (msg.type === "user") {
         const content = msg.message?.content || msg.content;
         if (Array.isArray(content)) {
@@ -145,7 +218,7 @@ export async function* runAgent(
         continue;
       }
 
-      // 4. Result message (final)
+      // 5. Result message (final)
       if (msg.type === "result") {
         if (msg.subtype === "success") {
           yield {

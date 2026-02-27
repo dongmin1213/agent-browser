@@ -102,7 +102,7 @@ function downloadFile(content: string, filename: string, type: string) {
 export default function Home() {
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingChatIds, setLoadingChatIds] = useState<Set<string>>(new Set());
   const [inputValue, setInputValue] = useState("");
   const [attachments, setAttachments] = useState<{ name: string; content: string }[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -208,15 +208,16 @@ export default function Home() {
     document.addEventListener("mouseup", handleMouseUp);
   }, []);
 
-  // Refs for stream event handler (avoid stale closures)
+  // Per-chat stream state and abort controllers
+  const streamStateRef = useRef<Map<string, {
+    assistantId: string | null;
+    toolUseId: string | null;
+    toolInputBuffer: Record<string, string>;
+    toolUseMessageIdMap: Map<string, string>;
+  }>>(new Map());
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const activeChatIdRef = useRef<string | null>(null);
-  const currentAssistantIdRef = useRef<string | null>(null);
-  const currentToolUseIdRef = useRef<string | null>(null);
-  const toolInputBufferRef = useRef<Record<string, string>>({});
-  const toolUseMessageIdMapRef = useRef<Map<string, string>>(new Map());
-  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Sync ref
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
@@ -310,176 +311,183 @@ export default function Home() {
   }, [activeChatId]);
 
   // =========================================
-  // Stream Event Handler
+  // Stream Event Handler (per-chat, chatId captured in closure)
   // =========================================
 
-  const handleStreamEvent = useCallback((event: StreamEvent) => {
-    const chatId = activeChatIdRef.current;
-    if (!chatId) return;
+  const createStreamHandler = useCallback((chatId: string) => {
+    // Initialize per-chat stream state
+    streamStateRef.current.set(chatId, {
+      assistantId: null,
+      toolUseId: null,
+      toolInputBuffer: {},
+      toolUseMessageIdMap: new Map(),
+    });
 
-    switch (event.type) {
-      case "session_init":
-        setChats((prev) => setChatSessionId(prev, chatId, event.sessionId));
-        break;
+    return (event: StreamEvent) => {
+      const state = streamStateRef.current.get(chatId);
+      if (!state) return;
 
-      case "text_delta": {
-        if (!currentAssistantIdRef.current) {
-          const newMsg: AssistantTextMessage = {
+      switch (event.type) {
+        case "session_init":
+          setChats((prev) => setChatSessionId(prev, chatId, event.sessionId));
+          break;
+
+        case "text_delta": {
+          if (!state.assistantId) {
+            const newMsg: AssistantTextMessage = {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: event.text,
+              timestamp: Date.now(),
+              isStreaming: true,
+            };
+            state.assistantId = newMsg.id;
+            setChats((prev) => addMessageToChat(prev, chatId, newMsg));
+          } else {
+            const msgId = state.assistantId;
+            setChats((prev) =>
+              updateMessageInChat(prev, chatId, msgId, (msg) => ({
+                ...msg,
+                content: (msg as AssistantTextMessage).content + event.text,
+              }))
+            );
+          }
+          break;
+        }
+
+        case "text_done": {
+          if (state.assistantId) {
+            const msgId = state.assistantId;
+            setChats((prev) =>
+              updateMessageInChat(prev, chatId, msgId, (msg) => ({
+                ...msg,
+                isStreaming: false,
+              }))
+            );
+            state.assistantId = null;
+          }
+          break;
+        }
+
+        case "tool_use_start": {
+          if (state.assistantId) {
+            const msgId = state.assistantId;
+            setChats((prev) =>
+              updateMessageInChat(prev, chatId, msgId, (msg) => ({
+                ...msg,
+                isStreaming: false,
+              }))
+            );
+            state.assistantId = null;
+          }
+
+          const toolMsg: ToolUseMessage = {
             id: crypto.randomUUID(),
-            role: "assistant",
-            content: event.text,
+            role: "tool_use",
+            toolName: event.toolName,
+            toolUseId: event.toolUseId,
+            input: {},
             timestamp: Date.now(),
-            isStreaming: true,
+            isRunning: true,
           };
-          currentAssistantIdRef.current = newMsg.id;
-          setChats((prev) => addMessageToChat(prev, chatId, newMsg));
-        } else {
-          const msgId = currentAssistantIdRef.current;
-          setChats((prev) =>
-            updateMessageInChat(prev, chatId, msgId, (msg) => ({
-              ...msg,
-              content:
-                (msg as AssistantTextMessage).content + event.text,
-            }))
-          );
-        }
-        break;
-      }
-
-      case "text_done": {
-        if (currentAssistantIdRef.current) {
-          const msgId = currentAssistantIdRef.current;
-          setChats((prev) =>
-            updateMessageInChat(prev, chatId, msgId, (msg) => ({
-              ...msg,
-              isStreaming: false,
-            }))
-          );
-          currentAssistantIdRef.current = null;
-        }
-        break;
-      }
-
-      case "tool_use_start": {
-        if (currentAssistantIdRef.current) {
-          const msgId = currentAssistantIdRef.current;
-          setChats((prev) =>
-            updateMessageInChat(prev, chatId, msgId, (msg) => ({
-              ...msg,
-              isStreaming: false,
-            }))
-          );
-          currentAssistantIdRef.current = null;
+          state.toolUseId = event.toolUseId;
+          state.toolInputBuffer[event.toolUseId] = "";
+          state.toolUseMessageIdMap.set(event.toolUseId, toolMsg.id);
+          setChats((prev) => addMessageToChat(prev, chatId, toolMsg));
+          break;
         }
 
-        const toolMsg: ToolUseMessage = {
-          id: crypto.randomUUID(),
-          role: "tool_use",
-          toolName: event.toolName,
-          toolUseId: event.toolUseId,
-          input: {},
-          timestamp: Date.now(),
-          isRunning: true,
-        };
-        currentToolUseIdRef.current = event.toolUseId;
-        toolInputBufferRef.current[event.toolUseId] = "";
-        toolUseMessageIdMapRef.current.set(event.toolUseId, toolMsg.id);
-        setChats((prev) => addMessageToChat(prev, chatId, toolMsg));
-        break;
-      }
-
-      case "tool_use_input_delta": {
-        const tid = currentToolUseIdRef.current;
-        if (tid) {
-          toolInputBufferRef.current[tid] =
-            (toolInputBufferRef.current[tid] || "") + event.partialJson;
-          try {
-            const parsed = JSON.parse(toolInputBufferRef.current[tid]);
-            const msgId = toolUseMessageIdMapRef.current.get(tid);
-            if (msgId) {
-              setChats((prev) =>
-                updateMessageInChat(prev, chatId, msgId, (msg) => ({
-                  ...msg,
-                  input: parsed,
-                }))
-              );
-            }
-          } catch {
-            // JSON not yet complete
-          }
-        }
-        break;
-      }
-
-      case "tool_use_done": {
-        setChats((prev) =>
-          updateMessageByToolUseId(prev, chatId, event.toolUseId, (msg) => ({
-            ...msg,
-            input: event.input || (msg as ToolUseMessage).input,
-            isRunning: false,
-          }))
-        );
-        currentToolUseIdRef.current = null;
-        break;
-      }
-
-      case "tool_result": {
-        const resultMsg: ToolResultMessage = {
-          id: crypto.randomUUID(),
-          role: "tool_result",
-          toolUseId: event.toolUseId,
-          content: event.content,
-          isError: event.isError,
-          timestamp: Date.now(),
-        };
-        setChats((prev) => addMessageToChat(prev, chatId, resultMsg));
-
-        setChats((prev) =>
-          updateMessageByToolUseId(prev, chatId, event.toolUseId, (msg) => ({
-            ...msg,
-            isRunning: false,
-          }))
-        );
-        break;
-      }
-
-      case "turn_done": {
-        currentAssistantIdRef.current = null;
-        break;
-      }
-
-      case "result": {
-        // Update title
-        setChats((prev) => {
-          const chat = prev.find((c) => c.id === chatId);
-          if (chat && chat.title === "New Chat") {
-            const firstUserMsg = chat.messages.find((m) => m.role === "user");
-            if (firstUserMsg && "content" in firstUserMsg) {
-              return updateChatTitle(prev, chatId, generateTitle(firstUserMsg.content as string));
+        case "tool_use_input_delta": {
+          const tid = state.toolUseId;
+          if (tid) {
+            state.toolInputBuffer[tid] = (state.toolInputBuffer[tid] || "") + event.partialJson;
+            try {
+              const parsed = JSON.parse(state.toolInputBuffer[tid]);
+              const msgId = state.toolUseMessageIdMap.get(tid);
+              if (msgId) {
+                setChats((prev) =>
+                  updateMessageInChat(prev, chatId, msgId, (msg) => ({
+                    ...msg,
+                    input: parsed,
+                  }))
+                );
+              }
+            } catch {
+              // JSON not yet complete
             }
           }
-          return prev;
-        });
-        // Update cost
-        if (event.costUsd || event.durationMs) {
-          setChats((prev) => updateChatCost(prev, chatId, event.costUsd || 0, event.durationMs || 0));
+          break;
         }
-        setIsLoading(false);
-        break;
-      }
 
-      case "error": {
-        const errMsg: ErrorMessage = {
-          id: crypto.randomUUID(),
-          role: "error",
-          content: event.message,
-          timestamp: Date.now(),
-        };
-        setChats((prev) => addMessageToChat(prev, chatId, errMsg));
-        setIsLoading(false);
-        break;
+        case "tool_use_done": {
+          setChats((prev) =>
+            updateMessageByToolUseId(prev, chatId, event.toolUseId, (msg) => ({
+              ...msg,
+              input: event.input || (msg as ToolUseMessage).input,
+              isRunning: false,
+            }))
+          );
+          state.toolUseId = null;
+          break;
+        }
+
+        case "tool_result": {
+          const resultMsg: ToolResultMessage = {
+            id: crypto.randomUUID(),
+            role: "tool_result",
+            toolUseId: event.toolUseId,
+            content: event.content,
+            isError: event.isError,
+            timestamp: Date.now(),
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, resultMsg));
+          setChats((prev) =>
+            updateMessageByToolUseId(prev, chatId, event.toolUseId, (msg) => ({
+              ...msg,
+              isRunning: false,
+            }))
+          );
+          break;
+        }
+
+        case "turn_done": {
+          state.assistantId = null;
+          break;
+        }
+
+        case "result": {
+          setChats((prev) => {
+            const chat = prev.find((c) => c.id === chatId);
+            if (chat && chat.title === "New Chat") {
+              const firstUserMsg = chat.messages.find((m) => m.role === "user");
+              if (firstUserMsg && "content" in firstUserMsg) {
+                return updateChatTitle(prev, chatId, generateTitle(firstUserMsg.content as string));
+              }
+            }
+            return prev;
+          });
+          if (event.costUsd || event.durationMs) {
+            setChats((prev) => updateChatCost(prev, chatId, event.costUsd || 0, event.durationMs || 0));
+          }
+          setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
+          streamStateRef.current.delete(chatId);
+          break;
+        }
+
+        case "error": {
+          const errMsg: ErrorMessage = {
+            id: crypto.randomUUID(),
+            role: "error",
+            content: event.message,
+            timestamp: Date.now(),
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, errMsg));
+          setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
+          streamStateRef.current.delete(chatId);
+          break;
+        }
       }
-    }
+    };
   }, []);
 
   // =========================================

@@ -94,10 +94,26 @@ export default function MessageBubble({
 }: MessageBubbleProps) {
   // ---- User message ----
   if (message.role === "user") {
+    const userImages = (message as { images?: string[] }).images;
     return (
       <div className="flex justify-end mb-4 group/msg">
         <div className="max-w-[80%]">
           <div className="bg-accent-dim/30 border border-accent/20 rounded-2xl rounded-br-md px-4 py-2.5">
+            {/* User-attached images */}
+            {userImages && userImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {userImages.map((src, i) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={i}
+                    src={src}
+                    alt={`attached image ${i + 1}`}
+                    className="max-w-[200px] max-h-[200px] rounded-lg border border-accent/20 object-contain"
+                    loading="lazy"
+                  />
+                ))}
+              </div>
+            )}
             <p className="text-text-primary whitespace-pre-wrap text-sm leading-relaxed">
               {message.content}
             </p>

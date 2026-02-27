@@ -1,11 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, DragEvent } from "react";
-
-interface Attachment {
-  name: string;
-  content: string;
-}
+import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, DragEvent, ClipboardEvent } from "react";
+import type { Attachment } from "@/types/chat";
 
 interface MessageInputProps {
   value: string;
@@ -16,6 +12,16 @@ interface MessageInputProps {
   attachments: Attachment[];
   onAttach: (files: Attachment[]) => void;
   onRemoveAttachment: (index: number) => void;
+}
+
+// Helper: read File as base64 data URL
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 export default function MessageInput({
@@ -52,13 +58,61 @@ export default function MessageInput({
     }
   };
 
+  // Handle image paste (Ctrl+V)
+  const handlePaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageItems: DataTransferItem[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        imageItems.push(item);
+      }
+    }
+
+    if (imageItems.length === 0) return; // Let default text paste happen
+
+    e.preventDefault(); // Prevent default only when we have images
+
+    const newAttachments: Attachment[] = [];
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        const ext = file.type.split("/")[1] || "png";
+        const name = `pasted-image-${Date.now()}.${ext}`;
+        newAttachments.push({
+          name,
+          content: dataUrl, // base64 data URL
+          type: "image",
+          dataUrl,
+        });
+      } catch {
+        // skip
+      }
+    }
+    if (newAttachments.length > 0) onAttach(newAttachments);
+  };
+
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
     const newAttachments: Attachment[] = [];
     for (const file of Array.from(files)) {
-      const text = await file.text();
-      newAttachments.push({ name: file.name, content: text });
+      if (file.type.startsWith("image/")) {
+        // Image file
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          newAttachments.push({ name: file.name, content: dataUrl, type: "image", dataUrl });
+        } catch {
+          // skip
+        }
+      } else {
+        // Text file
+        const text = await file.text();
+        newAttachments.push({ name: file.name, content: text, type: "text" });
+      }
     }
     onAttach(newAttachments);
     e.target.value = "";
@@ -92,15 +146,27 @@ export default function MessageInput({
     if (!files.length) return;
     const newAttachments: Attachment[] = [];
     for (const file of Array.from(files)) {
-      try {
-        const text = await file.text();
-        newAttachments.push({ name: file.name, content: text });
-      } catch {
-        // skip binary files
+      if (file.type.startsWith("image/")) {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          newAttachments.push({ name: file.name, content: dataUrl, type: "image", dataUrl });
+        } catch {
+          // skip
+        }
+      } else {
+        try {
+          const text = await file.text();
+          newAttachments.push({ name: file.name, content: text, type: "text" });
+        } catch {
+          // skip binary files
+        }
       }
     }
     if (newAttachments.length > 0) onAttach(newAttachments);
   };
+
+  const textAttachments = attachments.filter((a) => a.type !== "image");
+  const imageAttachments = attachments.filter((a) => a.type === "image");
 
   return (
     <div
@@ -119,32 +185,62 @@ export default function MessageInput({
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M8 2v12M2 8h12" />
             </svg>
-            Drop files here
+            Drop files or images here
           </div>
         )}
 
-        {/* Attachment chips */}
-        {attachments.length > 0 && (
+        {/* Image attachment previews */}
+        {imageAttachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {imageAttachments.map((att, i) => {
+              const globalIndex = attachments.indexOf(att);
+              return (
+                <div key={i} className="relative group">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={att.dataUrl}
+                    alt={att.name}
+                    className="w-16 h-16 object-cover rounded-lg border border-border"
+                  />
+                  <button
+                    onClick={() => onRemoveAttachment(globalIndex)}
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-bg-primary border border-border rounded-full flex items-center justify-center text-text-muted hover:text-error hover:border-error transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <svg width="6" height="6" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M2 2l4 4M6 2l-4 4" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Text attachment chips */}
+        {textAttachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {attachments.map((att, i) => (
-              <span
-                key={i}
-                className="inline-flex items-center gap-1 px-2 py-0.5 bg-bg-tertiary border border-border rounded text-[11px] text-text-secondary"
-              >
-                <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" className="text-text-muted">
-                  <path d="M3 1h7l3 3v10a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" />
-                </svg>
-                {att.name}
-                <button
-                  onClick={() => onRemoveAttachment(i)}
-                  className="text-text-muted hover:text-error ml-0.5"
+            {textAttachments.map((att, i) => {
+              const globalIndex = attachments.indexOf(att);
+              return (
+                <span
+                  key={i}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-bg-tertiary border border-border rounded text-[11px] text-text-secondary"
                 >
-                  <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M2 2l4 4M6 2l-4 4" />
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" className="text-text-muted">
+                    <path d="M3 1h7l3 3v10a1 1 0 01-1 1H3a1 1 0 01-1-1V2a1 1 0 011-1z" />
                   </svg>
-                </button>
-              </span>
-            ))}
+                  {att.name}
+                  <button
+                    onClick={() => onRemoveAttachment(globalIndex)}
+                    className="text-text-muted hover:text-error ml-0.5"
+                  >
+                    <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M2 2l4 4M6 2l-4 4" />
+                    </svg>
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
 
@@ -166,7 +262,7 @@ export default function MessageInput({
             multiple
             className="hidden"
             onChange={handleFileChange}
-            accept=".txt,.md,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.json,.css,.html,.yaml,.yml,.toml,.sql,.sh,.bat,.ps1,.csv,.xml,.env,.gitignore,.cfg,.ini,.log"
+            accept=".txt,.md,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.json,.css,.html,.yaml,.yml,.toml,.sql,.sh,.bat,.ps1,.csv,.xml,.env,.gitignore,.cfg,.ini,.log,.png,.jpg,.jpeg,.gif,.webp,.svg,.bmp"
           />
 
           <textarea
@@ -174,7 +270,8 @@ export default function MessageInput({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isDragging ? "Drop files here..." : "Send a message..."}
+            onPaste={handlePaste}
+            placeholder={isDragging ? "Drop files here..." : "Send a message... (paste images with Ctrl+V)"}
             rows={1}
             className="flex-1 bg-transparent text-text-primary placeholder-text-muted text-sm resize-none outline-none px-2 py-1.5 max-h-[200px]"
             disabled={isLoading}

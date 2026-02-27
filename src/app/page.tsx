@@ -10,6 +10,7 @@ import type {
   ToolResultMessage,
   ErrorMessage,
   AppSettings,
+  Attachment,
 } from "@/types/chat";
 import {
   loadChats,
@@ -104,7 +105,7 @@ export default function Home() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [loadingChatIds, setLoadingChatIds] = useState<Set<string>>(new Set());
   const [inputValue, setInputValue] = useState("");
-  const [attachments, setAttachments] = useState<{ name: string; content: string }[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [defaultCwd, setDefaultCwd] = useState("");
@@ -494,7 +495,7 @@ export default function Home() {
   // Send Message
   // =========================================
 
-  const doSend = useCallback(async (fullMessage: string, displayText: string) => {
+  const doSend = useCallback(async (fullMessage: string, displayText: string, images?: string[]) => {
     let chatId = activeChatIdRef.current;
     if (!chatId) {
       const newChat = createChat("opus", defaultCwd, appSettings);
@@ -512,6 +513,7 @@ export default function Home() {
       role: "user",
       content: displayText,
       timestamp: Date.now(),
+      ...(images && images.length > 0 ? { images } : {}),
     };
     setChats((prev) => addMessageToChat(prev, chatId!, userMsg));
     setLoadingChatIds((prev) => new Set(prev).add(chatId!));
@@ -541,6 +543,7 @@ export default function Home() {
           maxTurns: chatSettings?.maxTurns || appSettings.defaultMaxTurns || undefined,
           maxBudgetUsd: chatSettings?.maxBudgetUsd || appSettings.defaultMaxBudgetUsd || undefined,
           mcpServers: appSettings.mcpServers.length > 0 ? appSettings.mcpServers : undefined,
+          images: images && images.length > 0 ? images : undefined,
         }),
         signal: controller.signal,
       });
@@ -574,21 +577,28 @@ export default function Home() {
     const message = inputValue.trim();
     if (!message && attachments.length === 0) return;
 
+    const textAtts = attachments.filter((a) => a.type !== "image");
+    const imageAtts = attachments.filter((a) => a.type === "image");
+
     let fullMessage = message;
-    if (attachments.length > 0) {
-      const attachmentText = attachments
+    if (textAtts.length > 0) {
+      const attachmentText = textAtts
         .map((a) => `<file name="${a.name}">\n${a.content}\n</file>`)
         .join("\n\n");
       fullMessage = attachmentText + (message ? "\n\n" + message : "");
     }
 
-    const displayText = attachments.length > 0
-      ? (message || "") + `\n\n\uD83D\uDCCE ${attachments.map(a => a.name).join(", ")}`
+    // Collect display text and image data URLs for the user message bubble
+    const allNames = attachments.map((a) => a.name);
+    const displayText = allNames.length > 0
+      ? (message || "") + `\n\n\uD83D\uDCCE ${allNames.join(", ")}`
       : message;
+
+    const imageDataUrls = imageAtts.map((a) => a.dataUrl!);
 
     setInputValue("");
     setAttachments([]);
-    await doSend(fullMessage, displayText);
+    await doSend(fullMessage, displayText, imageDataUrls);
   }, [inputValue, attachments, doSend]);
 
   const handleSendDirect = useCallback(async (prompt: string) => {

@@ -17,6 +17,18 @@ interface BaseMessage {
 export interface UserMessage extends BaseMessage {
   role: "user";
   content: string;
+  images?: string[]; // base64 data URLs for display
+}
+
+// =========================================
+// Attachment (used in MessageInput + page.tsx)
+// =========================================
+
+export interface Attachment {
+  name: string;
+  content: string;
+  type: "text" | "image";
+  dataUrl?: string; // base64 data URL for image preview
 }
 
 export interface AssistantTextMessage extends BaseMessage {

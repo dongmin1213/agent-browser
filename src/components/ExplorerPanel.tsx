@@ -174,6 +174,13 @@ export default function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps)
   const [refreshCounter, setRefreshCounter] = useState(0);
   const selectedFileRef = useRef<string | null>(null);
 
+  // Reset selected file when cwd changes (chat switch)
+  useEffect(() => {
+    setSelectedFile(null);
+    setFileContent(null);
+    setFileLanguage("text");
+  }, [cwd]);
+
   // Keep ref in sync with state for SSE callback
   useEffect(() => {
     selectedFileRef.current = selectedFile;

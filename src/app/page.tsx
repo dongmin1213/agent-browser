@@ -495,8 +495,6 @@ export default function Home() {
   // =========================================
 
   const doSend = useCallback(async (fullMessage: string, displayText: string) => {
-    if (isLoading) return;
-
     let chatId = activeChatIdRef.current;
     if (!chatId) {
       const newChat = createChat("opus", defaultCwd, appSettings);
@@ -506,6 +504,9 @@ export default function Home() {
       activeChatIdRef.current = chatId;
     }
 
+    // Don't send if THIS chat is already loading
+    if (abortControllersRef.current.has(chatId)) return;
+
     const userMsg: UIMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -513,20 +514,20 @@ export default function Home() {
       timestamp: Date.now(),
     };
     setChats((prev) => addMessageToChat(prev, chatId!, userMsg));
-    setIsLoading(true);
-
-    currentAssistantIdRef.current = null;
-    currentToolUseIdRef.current = null;
-    toolInputBufferRef.current = {};
-    toolUseMessageIdMapRef.current.clear();
+    setLoadingChatIds((prev) => new Set(prev).add(chatId!));
 
     const chat = chatsRef.current.find((c) => c.id === chatId);
     const sessionId = chat?.sessionId || undefined;
     const chatSettings = chat?.settings;
+    const chatModel = chat?.model || "opus";
+    const chatCwd = chat?.cwd || defaultCwd;
+
+    // Create per-chat stream handler (chatId captured in closure)
+    const onEvent = createStreamHandler(chatId);
 
     try {
       const controller = new AbortController();
-      abortControllerRef.current = controller;
+      abortControllersRef.current.set(chatId, controller);
 
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -534,8 +535,8 @@ export default function Home() {
         body: JSON.stringify({
           message: fullMessage,
           sessionId,
-          model,
-          cwd: cwd || undefined,
+          model: chatModel,
+          cwd: chatCwd || undefined,
           systemPrompt: chatSettings?.systemPrompt || appSettings.defaultSystemPrompt || undefined,
           maxTurns: chatSettings?.maxTurns || appSettings.defaultMaxTurns || undefined,
           maxBudgetUsd: chatSettings?.maxBudgetUsd || appSettings.defaultMaxBudgetUsd || undefined,
@@ -548,10 +549,11 @@ export default function Home() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      await readNDJSONStream(response, handleStreamEvent);
+      await readNDJSONStream(response, onEvent);
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        setIsLoading(false);
+        setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId!); return next; });
+        streamStateRef.current.delete(chatId!);
         return;
       }
       const errMsg: ErrorMessage = {
@@ -561,11 +563,12 @@ export default function Home() {
         timestamp: Date.now(),
       };
       setChats((prev) => addMessageToChat(prev, chatId!, errMsg));
-      setIsLoading(false);
+      setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId!); return next; });
+      streamStateRef.current.delete(chatId!);
     } finally {
-      abortControllerRef.current = null;
+      abortControllersRef.current.delete(chatId!);
     }
-  }, [isLoading, handleStreamEvent, model, cwd, defaultCwd, appSettings]);
+  }, [createStreamHandler, defaultCwd, appSettings]);
 
   const handleSend = useCallback(async () => {
     const message = inputValue.trim();
@@ -593,13 +596,22 @@ export default function Home() {
   }, [doSend]);
 
   const handleStop = useCallback(() => {
-    abortControllerRef.current?.abort();
-    setIsLoading(false);
+    const chatId = activeChatIdRef.current;
+    if (!chatId) return;
+    const controller = abortControllersRef.current.get(chatId);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(chatId);
+    }
+    setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
+    streamStateRef.current.delete(chatId);
   }, []);
 
   // =========================================
   // Render
   // =========================================
+
+  const isCurrentChatLoading = loadingChatIds.has(activeChatId || "");
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -637,7 +649,7 @@ export default function Home() {
           <div className="flex flex-col min-w-0" style={{ width: rightPanel ? `${100 - rightPanelWidth}%` : "100%" }}>
             <ChatArea
               messages={activeChat?.messages || []}
-              isLoading={isLoading}
+              isLoading={isCurrentChatLoading}
               onSendPrompt={handleSendDirect}
               onBranchChat={handleBranchChat}
               chatCost={activeChat?.costUsd}
@@ -648,7 +660,7 @@ export default function Home() {
               onChange={setInputValue}
               onSend={handleSend}
               onStop={handleStop}
-              isLoading={isLoading}
+              isLoading={isCurrentChatLoading}
               attachments={attachments}
               onAttach={(files) => setAttachments((prev) => [...prev, ...files])}
               onRemoveAttachment={(i) => setAttachments((prev) => prev.filter((_, j) => j !== i))}

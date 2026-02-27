@@ -569,7 +569,10 @@ export default function Home() {
       setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId!); return next; });
       streamStateRef.current.delete(chatId!);
     } finally {
+      // Always clean up: abort controller, loading state, stream state
       abortControllersRef.current.delete(chatId!);
+      setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId!); return next; });
+      streamStateRef.current.delete(chatId!);
     }
   }, [createStreamHandler, defaultCwd, appSettings]);
 

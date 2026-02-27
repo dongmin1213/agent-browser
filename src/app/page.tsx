@@ -381,22 +381,11 @@ export default function Home() {
   }, []);
 
   // =========================================
-  // Send Message
+  // Send Message (core)
   // =========================================
 
-  const handleSend = useCallback(async () => {
-    const message = inputValue.trim();
-    if (!message && attachments.length === 0) return;
+  const doSend = useCallback(async (fullMessage: string, displayText: string) => {
     if (isLoading) return;
-
-    // Build full prompt with attachments
-    let fullMessage = message;
-    if (attachments.length > 0) {
-      const attachmentText = attachments
-        .map((a) => `<file name="${a.name}">\n${a.content}\n</file>`)
-        .join("\n\n");
-      fullMessage = attachmentText + (message ? "\n\n" + message : "");
-    }
 
     // Ensure we have a chat
     let chatId = activeChatIdRef.current;
@@ -408,10 +397,6 @@ export default function Home() {
       activeChatIdRef.current = chatId;
     }
 
-    // Add user message (show original text, not the full prompt with attachments)
-    const displayText = attachments.length > 0
-      ? (message || "") + (attachments.length > 0 ? `\n\n📎 ${attachments.map(a => a.name).join(", ")}` : "")
-      : message;
     const userMsg: UIMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -419,8 +404,6 @@ export default function Home() {
       timestamp: Date.now(),
     };
     setChats((prev) => addMessageToChat(prev, chatId!, userMsg));
-    setInputValue("");
-    setAttachments([]);
     setIsLoading(true);
 
     // Reset tracking refs
@@ -451,7 +434,6 @@ export default function Home() {
       await readNDJSONStream(response, handleStreamEvent);
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        // User stopped
         setIsLoading(false);
         return;
       }
@@ -467,7 +449,32 @@ export default function Home() {
     } finally {
       abortControllerRef.current = null;
     }
-  }, [inputValue, isLoading, handleStreamEvent]);
+  }, [isLoading, handleStreamEvent, model, cwd, defaultCwd]);
+
+  const handleSend = useCallback(async () => {
+    const message = inputValue.trim();
+    if (!message && attachments.length === 0) return;
+
+    let fullMessage = message;
+    if (attachments.length > 0) {
+      const attachmentText = attachments
+        .map((a) => `<file name="${a.name}">\n${a.content}\n</file>`)
+        .join("\n\n");
+      fullMessage = attachmentText + (message ? "\n\n" + message : "");
+    }
+
+    const displayText = attachments.length > 0
+      ? (message || "") + `\n\n\uD83D\uDCCE ${attachments.map(a => a.name).join(", ")}`
+      : message;
+
+    setInputValue("");
+    setAttachments([]);
+    await doSend(fullMessage, displayText);
+  }, [inputValue, attachments, doSend]);
+
+  const handleSendDirect = useCallback(async (prompt: string) => {
+    await doSend(prompt, prompt);
+  }, [doSend]);
 
   const handleStop = useCallback(() => {
     abortControllerRef.current?.abort();
@@ -513,6 +520,7 @@ export default function Home() {
             <ChatArea
               messages={activeChat?.messages || []}
               isLoading={isLoading}
+              onSendPrompt={handleSendDirect}
             />
             <MessageInput
               value={inputValue}

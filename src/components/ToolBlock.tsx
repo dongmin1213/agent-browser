@@ -46,6 +46,75 @@ function getToolSummary(
   }
 }
 
+function SmartInput({ toolName, input }: { toolName: string; input: Record<string, unknown> }) {
+  if (toolName === "Bash" && input.command) {
+    return (
+      <div className="font-mono text-xs text-text-secondary bg-bg-primary rounded px-2.5 py-2 overflow-x-auto">
+        <span className="text-text-muted select-none">$ </span>
+        {input.command as string}
+      </div>
+    );
+  }
+  if ((toolName === "Read" || toolName === "Write" || toolName === "Edit") && input.file_path) {
+    return (
+      <div className="text-xs text-text-secondary font-mono truncate px-1">
+        {input.file_path as string}
+      </div>
+    );
+  }
+  if (toolName === "Glob" && input.pattern) {
+    return (
+      <div className="text-xs text-text-secondary font-mono truncate px-1">
+        {input.pattern as string}
+      </div>
+    );
+  }
+  if (toolName === "Grep" && input.pattern) {
+    return (
+      <div className="text-xs text-text-secondary font-mono truncate px-1">
+        /{input.pattern as string}/
+      </div>
+    );
+  }
+  return (
+    <pre className="text-xs text-text-secondary whitespace-pre-wrap break-all max-h-60 overflow-y-auto">
+      {JSON.stringify(input, null, 2)}
+    </pre>
+  );
+}
+
+function CopySmall({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className="text-[10px] text-text-muted hover:text-text-primary transition-colors flex items-center gap-0.5"
+    >
+      {copied ? (
+        <>
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M3 8.5l3.5 3.5L13 4" />
+          </svg>
+          Copied
+        </>
+      ) : (
+        <>
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="5" y="5" width="8" height="8" rx="1" />
+            <path d="M3 11V3a1 1 0 011-1h8" />
+          </svg>
+          Copy
+        </>
+      )}
+    </button>
+  );
+}
+
 export default function ToolBlock({
   toolName,
   input,
@@ -100,21 +169,22 @@ export default function ToolBlock({
               <div className="text-xs text-text-muted mb-1 font-semibold">
                 Input
               </div>
-              <pre className="text-xs text-text-secondary whitespace-pre-wrap break-all max-h-60 overflow-y-auto">
-                {JSON.stringify(input, null, 2)}
-              </pre>
+              <SmartInput toolName={toolName} input={input} />
             </div>
           )}
 
           {/* Result */}
           {result && (
             <div>
-              <div
-                className={`text-xs mb-1 font-semibold ${
-                  result.isError ? "text-error" : "text-text-muted"
-                }`}
-              >
-                {result.isError ? "Error" : "Output"}
+              <div className="flex items-center justify-between mb-1">
+                <div
+                  className={`text-xs font-semibold ${
+                    result.isError ? "text-error" : "text-text-muted"
+                  }`}
+                >
+                  {result.isError ? "Error" : "Output"}
+                </div>
+                {result.content && <CopySmall text={result.content} />}
               </div>
               <pre
                 className={`text-xs whitespace-pre-wrap break-all max-h-80 overflow-y-auto ${

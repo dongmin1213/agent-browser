@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, KeyboardEvent, ChangeEvent } from "react";
+import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, DragEvent } from "react";
 
 interface Attachment {
   name: string;
@@ -30,6 +30,8 @@ export default function MessageInput({
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -62,9 +64,65 @@ export default function MessageInput({
     e.target.value = "";
   };
 
+  const handleDragEnter = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (dragCounterRef.current === 1) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) setIsDragging(false);
+  };
+
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = async (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (!files.length) return;
+    const newAttachments: Attachment[] = [];
+    for (const file of Array.from(files)) {
+      try {
+        const text = await file.text();
+        newAttachments.push({ name: file.name, content: text });
+      } catch {
+        // skip binary files
+      }
+    }
+    if (newAttachments.length > 0) onAttach(newAttachments);
+  };
+
   return (
-    <div className="border-t border-border bg-bg-primary px-4 py-3">
+    <div
+      className={`border-t border-border bg-bg-primary px-4 py-3 transition-all ${
+        isDragging ? "ring-2 ring-inset ring-accent/50 bg-accent/5" : ""
+      }`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <div className="max-w-3xl mx-auto">
+        {/* Drag overlay hint */}
+        {isDragging && (
+          <div className="flex items-center justify-center gap-2 mb-2 py-2 rounded-lg border-2 border-dashed border-accent/40 text-accent text-xs">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M8 2v12M2 8h12" />
+            </svg>
+            Drop files here
+          </div>
+        )}
+
         {/* Attachment chips */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
@@ -116,7 +174,7 @@ export default function MessageInput({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Send a message..."
+            placeholder={isDragging ? "Drop files here..." : "Send a message..."}
             rows={1}
             className="flex-1 bg-transparent text-text-primary placeholder-text-muted text-sm resize-none outline-none px-2 py-1.5 max-h-[200px]"
             disabled={isLoading}

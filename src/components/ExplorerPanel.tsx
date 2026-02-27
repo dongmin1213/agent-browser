@@ -35,13 +35,27 @@ function FileIcon({ isDirectory, name }: { isDirectory: boolean; name: string })
   );
 }
 
-function FolderTree({ dir, depth, onFileSelect, selectedFile }: { dir: string; depth: number; onFileSelect?: (path: string) => void; selectedFile?: string | null }) {
+function FolderTree({
+  dir,
+  depth,
+  onFileSelect,
+  selectedFile,
+  refreshCounter,
+}: {
+  dir: string;
+  depth: number;
+  onFileSelect?: (path: string) => void;
+  selectedFile?: string | null;
+  refreshCounter?: number;
+}) {
   const [items, setItems] = useState<FileItem[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const hasLoaded = useRef(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    // Only show loading spinner on initial load, not on refreshes
+    if (!hasLoaded.current) setLoading(true);
     try {
       const res = await fetch(`/api/files?dir=${encodeURIComponent(dir)}`);
       const data = await res.json();
@@ -50,9 +64,12 @@ function FolderTree({ dir, depth, onFileSelect, selectedFile }: { dir: string; d
       setItems([]);
     }
     setLoading(false);
+    hasLoaded.current = true;
   }, [dir]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load, refreshCounter]);
 
   if (loading && depth === 0) {
     return <div className="text-xs text-text-muted px-3 py-2">Loading...</div>;
@@ -94,7 +111,13 @@ function FolderTree({ dir, depth, onFileSelect, selectedFile }: { dir: string; d
             }`}>{item.name}</span>
           </button>
           {item.isDirectory && expanded.has(item.path) && (
-            <FolderTree dir={item.path} depth={depth + 1} onFileSelect={onFileSelect} selectedFile={selectedFile} />
+            <FolderTree
+              dir={item.path}
+              depth={depth + 1}
+              onFileSelect={onFileSelect}
+              selectedFile={selectedFile}
+              refreshCounter={refreshCounter}
+            />
           )}
         </div>
       ))}
@@ -148,6 +171,54 @@ export default function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps)
   const [treeWidth, setTreeWidth] = useState(40); // percentage
   const isDraggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [refreshCounter, setRefreshCounter] = useState(0);
+  const selectedFileRef = useRef<string | null>(null);
+
+  // Keep ref in sync with state for SSE callback
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
+
+  // SSE file watcher - connects when Explorer mounts, disconnects on unmount
+  useEffect(() => {
+    const eventSource = new EventSource(
+      `/api/watch?dir=${encodeURIComponent(cwd)}`
+    );
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "change") {
+          // Refresh all expanded folder trees
+          setRefreshCounter((c) => c + 1);
+
+          // If currently previewed file was modified, refresh its content
+          const currentFile = selectedFileRef.current;
+          if (currentFile && Array.isArray(data.files)) {
+            const normalizedCurrent = currentFile.replace(/\\/g, "/");
+            const wasModified = data.files.some(
+              (f: string) => f.replace(/\\/g, "/") === normalizedCurrent
+            );
+            if (wasModified) {
+              fetch(`/api/file-content?path=${encodeURIComponent(currentFile)}`)
+                .then((res) => res.json())
+                .then((d) => {
+                  setFileContent(d.content || d.error || "");
+                  setFileLanguage(d.language || "text");
+                })
+                .catch(() => {});
+            }
+          }
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [cwd]);
 
   const handleFileSelect = async (filePath: string) => {
     setSelectedFile(filePath);
@@ -199,7 +270,13 @@ export default function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps)
         <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           Explorer
         </div>
-        <FolderTree dir={cwd} depth={0} onFileSelect={handleFileSelect} selectedFile={selectedFile} />
+        <FolderTree
+          dir={cwd}
+          depth={0}
+          onFileSelect={handleFileSelect}
+          selectedFile={selectedFile}
+          refreshCounter={refreshCounter}
+        />
       </div>
 
       {/* Drag handle */}

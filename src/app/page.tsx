@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type {
   Chat,
   UIMessage,
@@ -9,6 +9,7 @@ import type {
   ToolUseMessage,
   ToolResultMessage,
   ErrorMessage,
+  PlanApprovalMessage,
   AppSettings,
   Attachment,
 } from "@/types/chat";
@@ -33,7 +34,7 @@ import {
 } from "@/lib/store";
 import Sidebar from "@/components/Sidebar";
 import ChatArea from "@/components/ChatArea";
-import MessageInput from "@/components/MessageInput";
+import MessageInput, { type SlashCommand } from "@/components/MessageInput";
 import TopBar from "@/components/TopBar";
 import ExplorerPanel from "@/components/ExplorerPanel";
 import PreviewPanel from "@/components/PreviewPanel";
@@ -47,38 +48,48 @@ async function readNDJSONStream(
   response: Response,
   onEvent: (event: StreamEvent) => void
 ) {
-  const reader = response.body!.getReader();
+  if (!response.body) return;
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
 
-    for (const line of lines) {
-      if (line.trim()) {
-        try {
-          const event = JSON.parse(line) as StreamEvent;
-          onEvent(event);
-        } catch {
-          // Skip malformed lines
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const event = JSON.parse(line) as StreamEvent;
+            onEvent(event);
+          } catch {
+            // Skip malformed lines
+          }
         }
       }
     }
-  }
 
-  // Remaining buffer
-  if (buffer.trim()) {
-    try {
-      const event = JSON.parse(buffer) as StreamEvent;
-      onEvent(event);
-    } catch {
-      // Skip
+    // Remaining buffer
+    if (buffer.trim()) {
+      try {
+        const event = JSON.parse(buffer) as StreamEvent;
+        onEvent(event);
+      } catch {
+        // Skip
+      }
     }
+  } catch (err) {
+    // Silently handle stream abort/disconnect errors
+    // AbortError, network errors, and Event objects can be thrown here
+    if (err instanceof Error && err.name !== "AbortError") {
+      throw err;
+    }
+    // Non-Error objects (like Event) are silently ignored
   }
 }
 
@@ -456,7 +467,54 @@ export default function Home() {
           break;
         }
 
+        case "plan_approval": {
+          // Clean up any stuck streaming states
+          setChats((prev) =>
+            prev.map((c) => {
+              if (c.id !== chatId) return c;
+              const cleaned = c.messages.map((m) => {
+                if (m.role === "assistant" && (m as AssistantTextMessage).isStreaming) {
+                  return { ...m, isStreaming: false };
+                }
+                if (m.role === "tool_use" && (m as ToolUseMessage).isRunning) {
+                  return { ...m, isRunning: false };
+                }
+                return m;
+              });
+              return { ...c, messages: cleaned };
+            })
+          );
+          // Add PlanApprovalMessage
+          const planMsg: PlanApprovalMessage = {
+            id: crypto.randomUUID(),
+            role: "plan_approval",
+            status: "pending",
+            timestamp: Date.now(),
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, planMsg));
+          // Clean up loading state (no result event follows)
+          setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
+          streamStateRef.current.delete(chatId);
+          break;
+        }
+
         case "result": {
+          // Clean up any stuck streaming/running states
+          setChats((prev) =>
+            prev.map((c) => {
+              if (c.id !== chatId) return c;
+              const cleaned = c.messages.map((m) => {
+                if (m.role === "assistant" && (m as AssistantTextMessage).isStreaming) {
+                  return { ...m, isStreaming: false };
+                }
+                if (m.role === "tool_use" && (m as ToolUseMessage).isRunning) {
+                  return { ...m, isRunning: false };
+                }
+                return m;
+              });
+              return { ...c, messages: cleaned };
+            })
+          );
           setChats((prev) => {
             const chat = prev.find((c) => c.id === chatId);
             if (chat && chat.title === "New Chat") {
@@ -476,6 +534,22 @@ export default function Home() {
         }
 
         case "error": {
+          // Clean up any stuck streaming/running states
+          setChats((prev) =>
+            prev.map((c) => {
+              if (c.id !== chatId) return c;
+              const cleaned = c.messages.map((m) => {
+                if (m.role === "assistant" && (m as AssistantTextMessage).isStreaming) {
+                  return { ...m, isStreaming: false };
+                }
+                if (m.role === "tool_use" && (m as ToolUseMessage).isRunning) {
+                  return { ...m, isRunning: false };
+                }
+                return m;
+              });
+              return { ...c, messages: cleaned };
+            })
+          );
           const errMsg: ErrorMessage = {
             id: crypto.randomUUID(),
             role: "error",
@@ -591,18 +665,33 @@ export default function Home() {
       fullMessage = attachmentText + (message ? "\n\n" + message : "");
     }
 
-    // Collect display text and image data URLs for the user message bubble
+    // Collect display text
     const allNames = attachments.map((a) => a.name);
     const displayText = allNames.length > 0
       ? (message || "") + `\n\n\uD83D\uDCCE ${allNames.join(", ")}`
       : message;
 
-    const imageDataUrls = imageAtts.map((a) => a.dataUrl!);
+    // Upload images to server first, get back file paths (avoids localStorage overflow)
+    let imagePaths: string[] = [];
+    if (imageAtts.length > 0) {
+      try {
+        const chatCwd = chatsRef.current.find((c) => c.id === activeChatIdRef.current)?.cwd || defaultCwd;
+        const res = await fetch("/api/upload-images", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ images: imageAtts.map((a) => a.dataUrl!), cwd: chatCwd || undefined }),
+        });
+        const data = await res.json();
+        imagePaths = data.paths || [];
+      } catch {
+        // Fall back: skip images on upload failure
+      }
+    }
 
     setInputValue("");
     setAttachments([]);
-    await doSend(fullMessage, displayText, imageDataUrls);
-  }, [inputValue, attachments, doSend]);
+    await doSend(fullMessage, displayText, imagePaths);
+  }, [inputValue, attachments, doSend, defaultCwd]);
 
   const handleSendDirect = useCallback(async (prompt: string) => {
     await doSend(prompt, prompt);
@@ -621,10 +710,340 @@ export default function Home() {
   }, []);
 
   // =========================================
+  // Slash Commands
+  // =========================================
+
+  const slashCommands: SlashCommand[] = useMemo(() => [
+    { name: "clear", description: "Clear all messages in current chat" },
+    { name: "compact", description: "Summarize conversation to save context", args: "<instructions?>" },
+    { name: "download", description: "Download a file from server", args: "<file path>" },
+    { name: "model", description: "Switch model (opus/sonnet/haiku)", args: "<model>" },
+    { name: "help", description: "Show available commands" },
+    { name: "usage", description: "Show token usage and cost" },
+    { name: "export", description: "Export chat (md/json)", args: "<format?>" },
+  ], []);
+
+  const handleCommand = useCallback((command: string, args: string) => {
+    const chatId = activeChatIdRef.current;
+
+    switch (command) {
+      case "clear": {
+        if (!chatId) return;
+        setChats((prev) =>
+          prev.map((c) => c.id === chatId ? { ...c, messages: [] as UIMessage[], sessionId: null, costUsd: 0, durationMs: 0 } : c)
+        );
+        break;
+      }
+      case "compact": {
+        if (!chatId) return;
+        const chat = chatsRef.current.find((c) => c.id === chatId);
+        if (!chat || chat.messages.length === 0) return;
+
+        // Build conversation text from messages
+        const convoLines: string[] = [];
+        for (const m of chat.messages) {
+          if (m.role === "user") convoLines.push(`User: ${(m as { content: string }).content}`);
+          else if (m.role === "assistant") convoLines.push(`Assistant: ${(m as AssistantTextMessage).content}`);
+          else if (m.role === "tool_use") convoLines.push(`[Tool: ${(m as ToolUseMessage).toolName}]`);
+          else if (m.role === "tool_result") convoLines.push(`[Tool Result: ${String((m as ToolResultMessage).content).slice(0, 200)}]`);
+        }
+        const conversationText = convoLines.join("\n");
+        const userInstructions = args.trim() || "Focus on key decisions, code changes, and current state.";
+
+        // Show compacting indicator
+        const compactingMsg: AssistantTextMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: "Compacting conversation...",
+          timestamp: Date.now(),
+          isStreaming: true,
+        };
+        setChats((prev) => addMessageToChat(prev, chatId, compactingMsg));
+
+        // Call API for AI summary (new session, dedicated system prompt)
+        const compactChatId = chatId;
+        const compactMsgId = compactingMsg.id;
+        (async () => {
+          try {
+            const chatCwd = chat.cwd || defaultCwd;
+            const response = await fetch("/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                message: `Here is the conversation so far:\n\n${conversationText}\n\nPlease provide a concise summary. ${userInstructions}`,
+                model: chat.model || "haiku",
+                cwd: chatCwd || undefined,
+                systemPrompt: "You are a conversation summarizer. Provide a concise but complete summary of the conversation. Include: key topics discussed, decisions made, code changes, current state, and any pending tasks. Output ONLY the summary in markdown format, no preamble.",
+                maxTurns: 1,
+              }),
+            });
+
+            if (!response.ok) throw new Error("Compact failed");
+
+            // Read full response to get summary text
+            let summaryText = "";
+            if (response.body) {
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = "";
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+                for (const line of lines) {
+                  if (!line.trim()) continue;
+                  try {
+                    const event = JSON.parse(line) as StreamEvent;
+                    if (event.type === "text_delta") {
+                      summaryText += event.text;
+                      // Live update the compacting message
+                      setChats((prev) =>
+                        updateMessageInChat(prev, compactChatId, compactMsgId, (msg) => ({
+                          ...msg,
+                          content: summaryText,
+                        }))
+                      );
+                    }
+                  } catch { /* skip */ }
+                }
+              }
+              // Process remaining buffer
+              if (buffer.trim()) {
+                try {
+                  const event = JSON.parse(buffer) as StreamEvent;
+                  if (event.type === "text_delta") summaryText += event.text;
+                } catch { /* skip */ }
+              }
+            }
+
+            if (!summaryText.trim()) summaryText = "Failed to generate summary.";
+
+            // Replace all messages with just the compact summary
+            const summaryMsg: AssistantTextMessage = {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: `**Conversation Summary (compacted)**\n\n${summaryText}`,
+              timestamp: Date.now(),
+              isStreaming: false,
+            };
+            setChats((prev) =>
+              prev.map((c) =>
+                c.id === compactChatId
+                  ? { ...c, messages: [summaryMsg], sessionId: null }
+                  : c
+              )
+            );
+          } catch {
+            // On error, remove the compacting message
+            setChats((prev) =>
+              updateMessageInChat(prev, compactChatId, compactMsgId, (msg) => ({
+                ...msg,
+                content: "Compact failed. Please try again.",
+                isStreaming: false,
+              }))
+            );
+          }
+        })();
+        break;
+      }
+      case "model": {
+        const modelMap: Record<string, string> = { opus: "opus", sonnet: "sonnet", haiku: "haiku" };
+        const target = modelMap[args.trim().toLowerCase()];
+        if (target && chatId) {
+          setChats((prev) => updateChatSettings(prev, chatId, { model: target }));
+          // Show confirmation as system-like message
+          const msg: AssistantTextMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: `Model switched to **${args.trim().toLowerCase()}**.`,
+            timestamp: Date.now(),
+            isStreaming: false,
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, msg));
+        } else {
+          // Show usage hint
+          const msg: AssistantTextMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "Usage: `/model <opus|sonnet|haiku>`",
+            timestamp: Date.now(),
+            isStreaming: false,
+          };
+          if (chatId) setChats((prev) => addMessageToChat(prev, chatId, msg));
+        }
+        break;
+      }
+      case "help": {
+        if (!chatId) {
+          const newChat = createChat("opus", defaultCwd, appSettings);
+          setChats((prev) => [newChat, ...prev]);
+          setActiveChatId(newChat.id);
+          activeChatIdRef.current = newChat.id;
+        }
+        const targetId = activeChatIdRef.current!;
+        const helpText = [
+          "**Available Commands:**",
+          "",
+          "| Command | Description |",
+          "|---------|-------------|",
+          "| `/clear` | Clear all messages in current chat |",
+          "| `/compact [instructions]` | Summarize conversation to save context |",
+          "| `/download <path>` | Download a file from server |",
+          "| `/model <opus\\|sonnet\\|haiku>` | Switch model |",
+          "| `/usage` | Show token usage and cost |",
+          "| `/export [md\\|json]` | Export chat |",
+          "| `/help` | Show this help |",
+          "",
+          "**Keyboard Shortcuts:**",
+          "",
+          "| Shortcut | Action |",
+          "|----------|--------|",
+          "| `Ctrl+N` | New chat |",
+          "| `Ctrl+K` | Search conversations |",
+          "| `Ctrl+,` | Settings |",
+          "| `Ctrl+E` | Toggle Explorer |",
+          "| `Ctrl+Shift+E` | Export as Markdown |",
+        ].join("\n");
+        const msg: AssistantTextMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: helpText,
+          timestamp: Date.now(),
+          isStreaming: false,
+        };
+        setChats((prev) => addMessageToChat(prev, targetId, msg));
+        break;
+      }
+      case "usage": {
+        if (!chatId) return;
+        const chat = chatsRef.current.find((c) => c.id === chatId);
+        const cost = chat?.costUsd || 0;
+        const duration = chat?.durationMs || 0;
+        const msgCount = chat?.messages.length || 0;
+        const usageText = [
+          "**Session Usage:**",
+          "",
+          `- Messages: **${msgCount}**`,
+          `- Cost: **$${cost.toFixed(4)}**`,
+          `- Duration: **${(duration / 1000).toFixed(1)}s**`,
+          `- Model: **${chat?.model || "opus"}**`,
+          `- Session ID: \`${chat?.sessionId || "none"}\``,
+        ].join("\n");
+        const msg: AssistantTextMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: usageText,
+          timestamp: Date.now(),
+          isStreaming: false,
+        };
+        setChats((prev) => addMessageToChat(prev, chatId, msg));
+        break;
+      }
+      case "export": {
+        if (!chatId) return;
+        const format = args.trim().toLowerCase() === "json" ? "json" : "md";
+        handleExportChat(chatId, format as "md" | "json");
+        break;
+      }
+      case "download": {
+        const filePath = args.trim();
+        if (!filePath) {
+          if (!chatId) return;
+          const msg: AssistantTextMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "Usage: `/download <file path>`\n\nExample: `/download C:\\project\\build\\app.apk`",
+            timestamp: Date.now(),
+            isStreaming: false,
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, msg));
+          return;
+        }
+        // Trigger browser download
+        const downloadUrl = `/api/download?path=${encodeURIComponent(filePath)}`;
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = "";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Show confirmation
+        if (chatId) {
+          const fileName = filePath.split(/[\\/]/).pop() || filePath;
+          const msg: AssistantTextMessage = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: `Downloading **${fileName}**...`,
+            timestamp: Date.now(),
+            isStreaming: false,
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, msg));
+        }
+        break;
+      }
+    }
+  }, [doSend, defaultCwd, appSettings, handleExportChat]);
+
+  // =========================================
+  // Plan Approval Handler
+  // =========================================
+
+  const handlePlanApproval = useCallback(async (approved: boolean, feedback?: string) => {
+    const chatId = activeChatIdRef.current;
+    if (!chatId) return;
+
+    // Update PlanApprovalMessage status
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id !== chatId) return c;
+        return {
+          ...c,
+          messages: c.messages.map((m) =>
+            m.role === "plan_approval" && (m as PlanApprovalMessage).status === "pending"
+              ? { ...m, status: approved ? "approved" : "rejected", feedback } as PlanApprovalMessage
+              : m
+          ),
+        };
+      })
+    );
+
+    // Resume session with approval/rejection message
+    if (approved) {
+      await doSend(
+        "The user approved the plan. Proceed with implementation.",
+        "Plan approved"
+      );
+    } else {
+      await doSend(
+        `The user rejected the plan. Please revise based on this feedback: ${feedback}`,
+        `Plan rejected: ${feedback}`
+      );
+    }
+  }, [doSend]);
+
+  // =========================================
   // Render
   // =========================================
 
   const isCurrentChatLoading = loadingChatIds.has(activeChatId || "");
+
+  // Stable callbacks for child components (prevent re-renders on inputValue change)
+  const handleOpenSettings = useCallback(() => setSettingsOpen(true), []);
+  const handleCloseSettings = useCallback(() => setSettingsOpen(false), []);
+  const handleCloseSidebar = useCallback(() => setSidebarOpen(false), []);
+  const handleOpenSidebar = useCallback(() => setSidebarOpen(true), []);
+  const handleToggleCollapse = useCallback(() => setSidebarCollapsed((p) => !p), []);
+  const handleAttach = useCallback((files: Attachment[]) => setAttachments((prev) => [...prev, ...files]), []);
+  const handleRemoveAttachment = useCallback((i: number) => setAttachments((prev) => prev.filter((_, j) => j !== i)), []);
+
+  // Stable memoized values
+  const activeMessages = useMemo(() => activeChat?.messages || [], [activeChat?.messages]);
+  const activeChatSettings = useMemo(
+    () => activeChat?.settings || { systemPrompt: "", maxTurns: 0, maxBudgetUsd: 0 },
+    [activeChat?.settings]
+  );
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -636,11 +1055,11 @@ export default function Home() {
         onNewChat={handleNewChat}
         onDeleteChat={handleDeleteChat}
         onExportChat={handleExportChat}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={handleOpenSettings}
         isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        onClose={handleCloseSidebar}
         collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed((p) => !p)}
+        onToggleCollapse={handleToggleCollapse}
       />
 
       {/* Main content */}
@@ -653,7 +1072,7 @@ export default function Home() {
           onCwdChange={handleCwdChange}
           activeTab={rightPanel}
           onTabChange={setRightPanel}
-          onMenuClick={() => setSidebarOpen(true)}
+          onMenuClick={handleOpenSidebar}
         />
 
         {/* Content area with optional right panel */}
@@ -661,10 +1080,11 @@ export default function Home() {
           {/* Chat column */}
           <div className="flex flex-col min-w-0" style={{ width: rightPanel ? `${100 - rightPanelWidth}%` : "100%" }}>
             <ChatArea
-              messages={activeChat?.messages || []}
+              messages={activeMessages}
               isLoading={isCurrentChatLoading}
               onSendPrompt={handleSendDirect}
               onBranchChat={handleBranchChat}
+              onPlanApproval={handlePlanApproval}
               chatCost={activeChat?.costUsd}
               chatDuration={activeChat?.durationMs}
             />
@@ -673,10 +1093,12 @@ export default function Home() {
               onChange={setInputValue}
               onSend={handleSend}
               onStop={handleStop}
+              onCommand={handleCommand}
               isLoading={isCurrentChatLoading}
               attachments={attachments}
-              onAttach={(files) => setAttachments((prev) => [...prev, ...files])}
-              onRemoveAttachment={(i) => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+              onAttach={handleAttach}
+              onRemoveAttachment={handleRemoveAttachment}
+              slashCommands={slashCommands}
             />
           </div>
 
@@ -695,7 +1117,7 @@ export default function Home() {
               style={{ width: `${rightPanelWidth}%` }}
             >
               {rightPanel === "explorer" && <ExplorerPanel cwd={cwd} />}
-              {rightPanel === "preview" && <PreviewPanel cwd={cwd} />}
+              {rightPanel === "preview" && <PreviewPanel cwd={cwd} appSettings={appSettings} />}
             </div>
           )}
         </div>
@@ -704,8 +1126,8 @@ export default function Home() {
       {/* Settings Modal */}
       <SettingsModal
         isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        chatSettings={activeChat?.settings || { systemPrompt: "", maxTurns: 0, maxBudgetUsd: 0 }}
+        onClose={handleCloseSettings}
+        chatSettings={activeChatSettings}
         onChatSettingsChange={handleChatSettingsChange}
         appSettings={appSettings}
         onAppSettingsChange={handleAppSettingsChange}

@@ -15,11 +15,8 @@ export default function CodeBlock({ language, children }: CodeBlockProps) {
     let cancelled = false;
     (async () => {
       try {
-        const { codeToHtml } = await import("shiki");
-        const html = await codeToHtml(children, {
-          lang: language || "text",
-          theme: "github-dark",
-        });
+        const { highlightCode } = await import("@/lib/shiki");
+        const html = await highlightCode(children, language || "text");
         if (!cancelled) setHighlighted(html);
       } catch {
         if (!cancelled) setHighlighted(null);
@@ -35,7 +32,7 @@ export default function CodeBlock({ language, children }: CodeBlockProps) {
   };
 
   return (
-    <div className="code-block-wrapper group/code relative my-3 rounded-lg border border-border overflow-hidden bg-[#0d1117]">
+    <div className="code-block-wrapper group/code relative my-3 rounded-lg border border-border overflow-hidden bg-[#0d1117] min-w-0">
       {/* Header: language badge + copy button */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-bg-secondary/80 border-b border-border">
         <span className="text-[11px] text-text-muted font-mono">
@@ -67,12 +64,12 @@ export default function CodeBlock({ language, children }: CodeBlockProps) {
       {/* Code content */}
       {highlighted ? (
         <div
-          className="overflow-x-auto text-[13px] leading-relaxed [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-3 [&_pre]:!border-0 [&_pre]:!rounded-none [&_code]:!text-[13px]"
+          className="overflow-x-auto text-[13px] leading-relaxed break-normal [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-3 [&_pre]:!border-0 [&_pre]:!rounded-none [&_pre]:!whitespace-pre [&_code]:!text-[13px] [&_code]:!break-normal"
           dangerouslySetInnerHTML={{ __html: highlighted }}
         />
       ) : (
-        <pre className="p-3 overflow-x-auto text-[13px] leading-relaxed text-text-secondary !bg-transparent !border-0 !rounded-none !m-0">
-          <code>{children}</code>
+        <pre className="p-3 overflow-x-auto text-[13px] leading-relaxed text-text-secondary !bg-transparent !border-0 !rounded-none !m-0 !whitespace-pre !break-normal">
+          <code className="!break-normal">{children}</code>
         </pre>
       )}
     </div>

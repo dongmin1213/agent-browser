@@ -55,20 +55,29 @@ export async function POST(request: NextRequest) {
     images?: string[];
   };
 
-  if (!message || typeof message !== "string") {
-    return new Response(JSON.stringify({ error: "message is required" }), {
+  // Allow empty text if images are attached
+  if ((!message || typeof message !== "string") && (!images || images.length === 0)) {
+    return new Response(JSON.stringify({ error: "message or images required" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  // Save images to temp files and append paths to prompt
-  let prompt = message;
+  // Images are now pre-saved file paths (uploaded via /api/upload-images)
+  // Fallback: if images look like base64 data URLs, save them to temp files
+  let prompt = message || "";
   if (images && images.length > 0) {
-    const imagePaths = await saveImagesToTemp(images, cwd);
+    let imagePaths: string[];
+    const hasDataUrls = images.some((img) => img.startsWith("data:"));
+    if (hasDataUrls) {
+      imagePaths = await saveImagesToTemp(images, cwd);
+    } else {
+      // Already file paths
+      imagePaths = images;
+    }
     if (imagePaths.length > 0) {
       const imageRefs = imagePaths.map((p) => `[Attached Image: ${p}]`).join("\n");
-      prompt = `${imageRefs}\n\n${message}`;
+      prompt = prompt ? `${imageRefs}\n\n${prompt}` : `${imageRefs}\n\nPlease analyze these images.`;
     }
   }
 

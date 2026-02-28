@@ -21,19 +21,31 @@ export async function* runAgent(
 
   const { prompt, sessionId, cwd, model, systemPrompt, maxTurns, maxBudgetUsd, mcpServers } = params;
 
+  // Build allowedTools list - include MCP tool patterns for enabled servers
+  const baseTools = [
+    "Read",
+    "Edit",
+    "Write",
+    "Bash",
+    "Glob",
+    "Grep",
+    "WebSearch",
+    "WebFetch",
+    "Task",
+    "ExitPlanMode",
+  ];
+
+  // Add MCP tool patterns for enabled servers (format: mcp__<serverName>)
+  if (mcpServers && mcpServers.length > 0) {
+    const enabledServers = mcpServers.filter((s) => s.enabled);
+    for (const server of enabledServers) {
+      baseTools.push(`mcp__${server.name}`);
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const options: Record<string, any> = {
-    allowedTools: [
-      "Read",
-      "Edit",
-      "Write",
-      "Bash",
-      "Glob",
-      "Grep",
-      "WebSearch",
-      "WebFetch",
-      "Task",
-    ],
+    allowedTools: baseTools,
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     // Enable real token-level streaming
@@ -90,6 +102,11 @@ export async function* runAgent(
   // Map of content block index → tool_use_id for streaming tool inputs
   const toolUseBlockMap = new Map<number, { toolUseId: string; toolName: string }>();
 
+  // ExitPlanMode detection — suppress events and yield plan_approval
+  let exitPlanModeDetected = false;
+  let exitPlanModeBlockIndex = -1;
+  let exitPlanModeToolUseId = "";
+
   try {
     for await (const message of query({ prompt, options })) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -112,6 +129,14 @@ export async function* runAgent(
             if (block?.type === "text") {
               isStreamingText = true;
             } else if (block?.type === "tool_use") {
+              // Detect ExitPlanMode — suppress its events
+              if (block.name === "ExitPlanMode") {
+                exitPlanModeDetected = true;
+                exitPlanModeBlockIndex = event.index;
+                exitPlanModeToolUseId = block.id;
+                // Don't yield tool_use_start for ExitPlanMode
+                break;
+              }
               toolUseBlockMap.set(event.index, {
                 toolUseId: block.id,
                 toolName: block.name,
@@ -130,6 +155,10 @@ export async function* runAgent(
             if (delta?.type === "text_delta" && delta.text) {
               yield { type: "text_delta", text: delta.text };
             } else if (delta?.type === "input_json_delta" && delta.partial_json) {
+              // Suppress input deltas for ExitPlanMode
+              if (exitPlanModeDetected && event.index === exitPlanModeBlockIndex) {
+                break;
+              }
               yield { type: "tool_use_input_delta", partialJson: delta.partial_json };
             }
             break;
@@ -161,6 +190,10 @@ export async function* runAgent(
                 yield { type: "text_done" };
               }
             } else if (block.type === "tool_use") {
+              // Suppress ExitPlanMode tool_use_done
+              if (exitPlanModeDetected && block.id === exitPlanModeToolUseId) {
+                continue;
+              }
               // Emit tool_use_done with complete input
               const tracked = toolUseBlockMap.get(
                 content.indexOf(block)
@@ -199,6 +232,10 @@ export async function* runAgent(
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === "tool_result") {
+              // Suppress ExitPlanMode tool_result
+              if (exitPlanModeDetected && block.tool_use_id === exitPlanModeToolUseId) {
+                continue;
+              }
               const resultText = Array.isArray(block.content)
                 ? block.content
                     .map((c: { text?: string }) => c.text || "")
@@ -214,6 +251,13 @@ export async function* runAgent(
               };
             }
           }
+        }
+
+        // After processing tool results, if ExitPlanMode was detected:
+        // yield plan_approval and stop the generator to pause the agent
+        if (exitPlanModeDetected) {
+          yield { type: "plan_approval" };
+          return; // Stop generator — session is saved, can resume later
         }
         continue;
       }

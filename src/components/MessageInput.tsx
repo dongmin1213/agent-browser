@@ -3,15 +3,23 @@
 import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, DragEvent, ClipboardEvent } from "react";
 import type { Attachment } from "@/types/chat";
 
+export interface SlashCommand {
+  name: string;
+  description: string;
+  args?: string; // placeholder for argument (e.g., "<instructions>")
+}
+
 interface MessageInputProps {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
   onStop: () => void;
+  onCommand: (command: string, args: string) => void;
   isLoading: boolean;
   attachments: Attachment[];
   onAttach: (files: Attachment[]) => void;
   onRemoveAttachment: (index: number) => void;
+  slashCommands: SlashCommand[];
 }
 
 // Helper: read File as base64 data URL
@@ -29,15 +37,37 @@ export default function MessageInput({
   onChange,
   onSend,
   onStop,
+  onCommand,
   isLoading,
   attachments,
   onAttach,
   onRemoveAttachment,
+  slashCommands,
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
+  const [showCommands, setShowCommands] = useState(false);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const commandMenuRef = useRef<HTMLDivElement>(null);
+
+  // Filter commands based on input
+  const filteredCommands = value.startsWith("/")
+    ? slashCommands.filter((cmd) =>
+        `/${cmd.name}`.toLowerCase().startsWith(value.split(" ")[0].toLowerCase())
+      )
+    : [];
+
+  // Show/hide command menu
+  useEffect(() => {
+    if (value.startsWith("/") && !value.includes(" ") && filteredCommands.length > 0) {
+      setShowCommands(true);
+      setSelectedCommandIndex(0);
+    } else {
+      setShowCommands(false);
+    }
+  }, [value, filteredCommands.length]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -51,10 +81,58 @@ export default function MessageInput({
     if (!isLoading) textareaRef.current?.focus();
   }, [isLoading]);
 
+  const executeCommand = (cmd: SlashCommand) => {
+    onChange(`/${cmd.name} `);
+    setShowCommands(false);
+    // If command has no args, execute immediately
+    if (!cmd.args) {
+      onCommand(cmd.name, "");
+      onChange("");
+    }
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Command menu navigation
+    if (showCommands) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) => (prev > 0 ? prev - 1 : filteredCommands.length - 1));
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) => (prev < filteredCommands.length - 1 ? prev + 1 : 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        const cmd = filteredCommands[selectedCommandIndex];
+        if (cmd) executeCommand(cmd);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setShowCommands(false);
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!isLoading && (value.trim() || attachments.length > 0)) onSend();
+      // Check for slash command execution
+      const trimmed = value.trim();
+      if (trimmed.startsWith("/")) {
+        const parts = trimmed.split(/\s+/);
+        const cmdName = parts[0].slice(1); // remove leading /
+        const cmdArgs = parts.slice(1).join(" ");
+        const cmd = slashCommands.find((c) => c.name === cmdName);
+        if (cmd) {
+          onCommand(cmdName, cmdArgs);
+          onChange("");
+          return;
+        }
+      }
+      if (!isLoading && (trimmed || attachments.length > 0)) onSend();
     }
   };
 
@@ -241,6 +319,28 @@ export default function MessageInput({
                 </span>
               );
             })}
+          </div>
+        )}
+
+        {/* Slash command menu */}
+        {showCommands && (
+          <div
+            ref={commandMenuRef}
+            className="mb-1 bg-bg-secondary border border-border rounded-lg shadow-lg overflow-hidden"
+          >
+            {filteredCommands.map((cmd, i) => (
+              <button
+                key={cmd.name}
+                onClick={() => executeCommand(cmd)}
+                className={`w-full flex items-center gap-3 px-3 py-2 text-left text-sm transition-colors ${
+                  i === selectedCommandIndex ? "bg-accent/15 text-accent" : "text-text-primary hover:bg-bg-hover"
+                }`}
+              >
+                <span className="font-mono text-xs font-semibold text-accent">/{cmd.name}</span>
+                <span className="text-text-muted text-xs">{cmd.description}</span>
+                {cmd.args && <span className="text-text-muted text-[10px] opacity-60 ml-auto">{cmd.args}</span>}
+              </button>
+            ))}
           </div>
         )}
 

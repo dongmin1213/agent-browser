@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import type { ChatSettings, AppSettings, McpServerConfig } from "@/types/chat";
 
 interface SettingsModalProps {
@@ -14,9 +14,9 @@ interface SettingsModalProps {
   onAppSettingsChange: (settings: AppSettings) => void;
 }
 
-type Tab = "chat" | "mcp" | "app";
+type Tab = "chat" | "mcp" | "device" | "app";
 
-export default function SettingsModal({
+export default memo(function SettingsModal({
   isOpen,
   onClose,
   chatSettings,
@@ -83,6 +83,7 @@ export default function SettingsModal({
   const tabs: { key: Tab; label: string }[] = [
     { key: "chat", label: "Chat" },
     { key: "mcp", label: "MCP Servers" },
+    { key: "device", label: "Device" },
     { key: "app", label: "Defaults" },
   ];
 
@@ -235,6 +236,57 @@ export default function SettingsModal({
             </>
           )}
 
+          {tab === "device" && (
+            <>
+              <p className="text-xs text-text-muted mb-2">
+                Configure ws-scrcpy for Android device mirroring in Preview panel.
+              </p>
+              {/* ws-scrcpy Path */}
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                  ws-scrcpy Directory Path
+                </label>
+                <input
+                  value={localApp.wsScrcpyPath}
+                  onChange={(e) => setLocalApp((p) => ({ ...p, wsScrcpyPath: e.target.value }))}
+                  placeholder="e.g. C:\Users\you\ws-scrcpy"
+                  className="w-full bg-bg-primary border border-border rounded-md px-3 py-1.5 text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent font-mono"
+                />
+                <p className="text-[10px] text-text-muted mt-1">
+                  Path to cloned ws-scrcpy repository (must have node_modules installed)
+                </p>
+              </div>
+              {/* ws-scrcpy Port */}
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-1.5">
+                  ws-scrcpy Port
+                </label>
+                <input
+                  type="number"
+                  min={1024}
+                  max={65535}
+                  value={localApp.wsScrcpyPort}
+                  onChange={(e) => setLocalApp((p) => ({ ...p, wsScrcpyPort: Number(e.target.value) || 8000 }))}
+                  className="w-32 bg-bg-primary border border-border rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent"
+                />
+              </div>
+              {/* Setup guide */}
+              <div className="bg-bg-primary border border-border rounded-md p-3 space-y-1.5">
+                <div className="text-xs font-medium text-text-secondary">Setup Guide</div>
+                <div className="text-[10px] text-text-muted space-y-1 font-mono">
+                  <p>1. git clone https://github.com/nickytonline/ws-scrcpy</p>
+                  <p>2. cd ws-scrcpy</p>
+                  <p>3. npm install</p>
+                  <p>4. npm run build</p>
+                  <p>5. Set the path above to the ws-scrcpy directory</p>
+                </div>
+                <p className="text-[10px] text-text-muted mt-2">
+                  Requires: ADB installed, Android device connected (USB debugging ON) or MuMu/Emulator running.
+                </p>
+              </div>
+            </>
+          )}
+
           {tab === "app" && (
             <>
               {/* Theme */}
@@ -318,4 +370,4 @@ export default function SettingsModal({
       </div>
     </div>
   );
-}
+});

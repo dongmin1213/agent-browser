@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useMemo, useState } from "react";
-import type { UIMessage, ToolResultMessage, ToolUseMessage } from "@/types/chat";
+import { useEffect, useRef, useMemo, useState, memo } from "react";
+import type { UIMessage, ToolResultMessage, ToolUseMessage, PlanApprovalMessage } from "@/types/chat";
 import MessageBubble from "./MessageBubble";
 import ToolBlock from "./ToolBlock";
+import PlanApprovalBlock from "./PlanApprovalBlock";
 
 const SUGGESTED_PROMPTS = [
   { icon: "\uD83D\uDCDD", label: "Explain this codebase", prompt: "Read the project structure and give me a high-level overview of this codebase." },
@@ -17,6 +18,7 @@ interface ChatAreaProps {
   isLoading: boolean;
   onSendPrompt?: (prompt: string) => void;
   onBranchChat?: (messageIndex: number) => void;
+  onPlanApproval?: (approved: boolean, feedback?: string) => void;
   chatCost?: number;
   chatDuration?: number;
 }
@@ -186,7 +188,7 @@ function groupMessages(messages: UIMessage[]): MessageSegment[] {
 // ChatArea
 // =========================================
 
-export default function ChatArea({ messages, isLoading, onSendPrompt, onBranchChat, chatCost, chatDuration }: ChatAreaProps) {
+export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBranchChat, onPlanApproval, chatCost, chatDuration }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -240,6 +242,19 @@ export default function ChatArea({ messages, isLoading, onSendPrompt, onBranchCh
       <div className="max-w-3xl mx-auto">
         {segments.map((segment, i) => {
           if (segment.type === "message") {
+            // Render PlanApprovalBlock for plan_approval messages
+            if (segment.msg.role === "plan_approval") {
+              const planMsg = segment.msg as PlanApprovalMessage;
+              return (
+                <PlanApprovalBlock
+                  key={segment.msg.id}
+                  status={planMsg.status}
+                  feedback={planMsg.feedback}
+                  onApprove={() => onPlanApproval?.(true)}
+                  onReject={(feedback) => onPlanApproval?.(false, feedback)}
+                />
+              );
+            }
             return (
               <MessageBubble
                 key={segment.msg.id}
@@ -298,4 +313,4 @@ export default function ChatArea({ messages, isLoading, onSendPrompt, onBranchCh
       </div>
     </div>
   );
-}
+});

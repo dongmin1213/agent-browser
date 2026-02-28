@@ -1,4 +1,5 @@
 import type { Chat, UIMessage, AppSettings } from "@/types/chat";
+import { DEFAULT_APP_SETTINGS, DEFAULT_MCP_SERVERS } from "@/types/chat";
 
 const STORAGE_KEY = "claude-agent-chats";
 const APP_SETTINGS_KEY = "claude-agent-app-settings";
@@ -26,19 +27,66 @@ export function loadChats(): Chat[] {
 
 export function saveChats(chats: Chat[]): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+  // Strip any remaining base64 data URLs from images to prevent localStorage overflow
+  const sanitized = chats.map((chat) => ({
+    ...chat,
+    messages: chat.messages.map((msg) => {
+      const images = (msg as { images?: string[] }).images;
+      if (images && images.some((s) => s.startsWith("data:"))) {
+        // Filter out base64 data URLs, keep only file paths
+        const pathsOnly = images.filter((s) => !s.startsWith("data:"));
+        if (pathsOnly.length > 0) {
+          return { ...msg, images: pathsOnly };
+        }
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { images: _removed, ...rest } = msg as unknown as Record<string, unknown>;
+        return rest as unknown as UIMessage;
+      }
+      return msg;
+    }),
+  }));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+  } catch {
+    // localStorage quota exceeded — try saving without images at all
+    const noImages = sanitized.map((chat) => ({
+      ...chat,
+      messages: chat.messages.map((msg) => {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { images: _img, ...rest } = msg as unknown as Record<string, unknown>;
+        return rest as unknown as UIMessage;
+      }),
+    }));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(noImages));
+    } catch {
+      // If still failing, ignore
+    }
+  }
 }
 
 export function loadAppSettings(): AppSettings {
   if (typeof window === "undefined") {
-    return { theme: "dark", mcpServers: [], defaultSystemPrompt: "", defaultMaxTurns: 0, defaultMaxBudgetUsd: 0 };
+    return { ...DEFAULT_APP_SETTINGS };
   }
   try {
     const raw = localStorage.getItem(APP_SETTINGS_KEY);
-    if (!raw) return { theme: "dark", mcpServers: [], defaultSystemPrompt: "", defaultMaxTurns: 0, defaultMaxBudgetUsd: 0 };
-    return { ...{ theme: "dark", mcpServers: [], defaultSystemPrompt: "", defaultMaxTurns: 0, defaultMaxBudgetUsd: 0 }, ...JSON.parse(raw) };
+    if (!raw) return { ...DEFAULT_APP_SETTINGS };
+    const saved = { ...DEFAULT_APP_SETTINGS, ...JSON.parse(raw) } as AppSettings;
+
+    // Migrate: ensure default MCP servers exist
+    for (const defaultServer of DEFAULT_MCP_SERVERS) {
+      const exists = saved.mcpServers.some(
+        (s) => s.id === defaultServer.id || s.name === defaultServer.name
+      );
+      if (!exists) {
+        saved.mcpServers.push({ ...defaultServer });
+      }
+    }
+
+    return saved;
   } catch {
-    return { theme: "dark", mcpServers: [], defaultSystemPrompt: "", defaultMaxTurns: 0, defaultMaxBudgetUsd: 0 };
+    return { ...DEFAULT_APP_SETTINGS };
   }
 }
 

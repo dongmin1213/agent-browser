@@ -16,7 +16,8 @@
     "react-dom": "^19.0.0",
     "react-markdown": "^9.0.3",
     "remark-gfm": "^4.0.0",
-    "shiki": "^4.0.0"
+    "shiki": "^4.0.0",
+    "tree-kill": "^1.2.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",

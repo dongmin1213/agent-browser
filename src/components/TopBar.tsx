@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import FolderPicker from "./FolderPicker";
 
 const MODELS = [
@@ -19,7 +19,7 @@ interface TopBarProps {
   onMenuClick: () => void;
 }
 
-export default function TopBar({
+export default memo(function TopBar({
   model,
   onModelChange,
   cwd,
@@ -142,4 +142,4 @@ export default function TopBar({
       </button>
     </div>
   );
-}
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, memo } from "react";
 import type { Chat } from "@/types/chat";
 
 interface SidebarProps {
@@ -31,7 +31,7 @@ function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
-export default function Sidebar({
+export default memo(function Sidebar({
   chats,
   activeChatId,
   onSelectChat,
@@ -292,4 +292,4 @@ export default function Sidebar({
       </aside>
     </>
   );
-}
+});

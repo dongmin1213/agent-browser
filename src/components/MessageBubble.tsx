@@ -92,26 +92,35 @@ export default function MessageBubble({
   messageIndex,
   onBranch,
 }: MessageBubbleProps) {
+  // ---- Plan approval (handled by ChatArea directly) ----
+  if (message.role === "plan_approval") {
+    return null;
+  }
+
   // ---- User message ----
   if (message.role === "user") {
     const userImages = (message as { images?: string[] }).images;
     return (
       <div className="flex justify-end mb-4 group/msg">
-        <div className="max-w-[80%]">
+        <div className="max-w-[80%] min-w-0">
           <div className="bg-accent-dim/30 border border-accent/20 rounded-2xl rounded-br-md px-4 py-2.5">
             {/* User-attached images */}
             {userImages && userImages.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2">
-                {userImages.map((src, i) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={i}
-                    src={src}
-                    alt={`attached image ${i + 1}`}
-                    className="max-w-[200px] max-h-[200px] rounded-lg border border-accent/20 object-contain"
-                    loading="lazy"
-                  />
-                ))}
+                {userImages.map((src, i) => {
+                  // If src is a file path (not data URL), use API endpoint
+                  const imgSrc = src.startsWith("data:") ? src : `/api/image?path=${encodeURIComponent(src)}`;
+                  return (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      key={i}
+                      src={imgSrc}
+                      alt={`attached image ${i + 1}`}
+                      className="max-w-[200px] max-h-[200px] rounded-lg border border-accent/20 object-contain"
+                      loading="lazy"
+                    />
+                  );
+                })}
               </div>
             )}
             <p className="text-text-primary whitespace-pre-wrap text-sm leading-relaxed">
@@ -131,16 +140,20 @@ export default function MessageBubble({
 
   // ---- Assistant text ----
   if (message.role === "assistant") {
+    // Hide empty assistant messages (no content + not streaming)
+    if (!message.content.trim() && !message.isStreaming) return null;
     return (
       <div className="flex justify-start mb-4 group/msg">
-        <div className="max-w-[85%]">
-          <div className="markdown-content text-sm leading-relaxed">
+        <div className="max-w-[85%] min-w-0">
+          <div className="markdown-content text-sm leading-relaxed overflow-hidden break-words [&_.code-block-wrapper]:overflow-x-auto [&_.code-block-wrapper]:break-normal">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
                 code({ className, children }) {
                   const match = /language-(\w+)/.exec(className || "");
-                  const isBlock = !!match || !!className;
+                  const codeString = String(children).replace(/\n$/, "");
+                  // Block: has language class OR content has newlines (fenced code block without lang)
+                  const isBlock = !!match || !!className || codeString.includes("\n");
                   if (!isBlock) {
                     return (
                       <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] text-accent/90">
@@ -150,7 +163,7 @@ export default function MessageBubble({
                   }
                   return (
                     <CodeBlock language={match ? match[1] : ""}>
-                      {String(children).replace(/\n$/, "")}
+                      {codeString}
                     </CodeBlock>
                   );
                 },

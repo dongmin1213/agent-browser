@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, memo } from "react";
 
 interface FileItem {
   name: string;
@@ -133,11 +133,8 @@ function CodePreview({ content, language }: { content: string; language: string 
     let cancelled = false;
     (async () => {
       try {
-        const { codeToHtml } = await import("shiki");
-        const html = await codeToHtml(content, {
-          lang: language || "text",
-          theme: "github-dark",
-        });
+        const { highlightCode } = await import("@/lib/shiki");
+        const html = await highlightCode(content, language || "text");
         if (!cancelled) setHighlighted(html);
       } catch {
         // Fallback: no highlighting
@@ -164,7 +161,7 @@ function CodePreview({ content, language }: { content: string; language: string 
   );
 }
 
-export default function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps) {
+export default memo(function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileLanguage, setFileLanguage] = useState("text");
@@ -220,6 +217,11 @@ export default function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps)
       } catch {
         // Ignore parse errors
       }
+    };
+
+    // Prevent [object Event] unhandled rejection
+    eventSource.onerror = () => {
+      // SSE auto-reconnects; silently ignore connection errors
     };
 
     return () => {
@@ -317,4 +319,4 @@ export default function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelProps)
       )}
     </div>
   );
-}
+});

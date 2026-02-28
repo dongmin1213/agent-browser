@@ -85,12 +85,25 @@ code {
 }
 
 /* Code block wrapper inside markdown - override global pre styles */
+.markdown-content .code-block-wrapper {
+  overflow-x: auto;
+  word-break: normal;
+  overflow-wrap: normal;
+}
 .markdown-content .code-block-wrapper pre {
   background-color: transparent !important;
   border: none !important;
   border-radius: 0 !important;
   padding: 12px 16px !important;
   margin: 0 !important;
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+.markdown-content .code-block-wrapper code {
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  white-space: pre !important;
 }
 
 /* Light theme code adjustments */
@@ -143,11 +156,14 @@ code {
   width: 100%;
   margin: 0.75em 0;
   font-size: 0.9em;
+  table-layout: fixed;
+  overflow-wrap: break-word;
 }
 .markdown-content th, .markdown-content td {
   border: 1px solid var(--color-border);
   padding: 6px 12px;
   text-align: left;
+  word-break: break-word;
 }
 .markdown-content th {
   background-color: var(--color-bg-secondary);

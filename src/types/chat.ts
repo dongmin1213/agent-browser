@@ -7,7 +7,8 @@ export type UIMessage =
   | AssistantTextMessage
   | ToolUseMessage
   | ToolResultMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | PlanApprovalMessage;
 
 interface BaseMessage {
   id: string;
@@ -55,6 +56,12 @@ export interface ToolResultMessage extends BaseMessage {
 export interface ErrorMessage extends BaseMessage {
   role: "error";
   content: string;
+}
+
+export interface PlanApprovalMessage extends BaseMessage {
+  role: "plan_approval";
+  status: "pending" | "approved" | "rejected";
+  feedback?: string;
 }
 
 // =========================================
@@ -109,14 +116,28 @@ export interface AppSettings {
   defaultSystemPrompt: string;
   defaultMaxTurns: number;
   defaultMaxBudgetUsd: number;
+  wsScrcpyPath: string;
+  wsScrcpyPort: number;
 }
+
+export const DEFAULT_MCP_SERVERS: McpServerConfig[] = [
+  {
+    id: "playwright-default",
+    name: "playwright",
+    command: "npx",
+    args: ["@playwright/mcp@latest"],
+    enabled: true,
+  },
+];
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: "dark",
-  mcpServers: [],
+  mcpServers: [...DEFAULT_MCP_SERVERS],
   defaultSystemPrompt: "",
   defaultMaxTurns: 0,
   defaultMaxBudgetUsd: 0,
+  wsScrcpyPath: "",
+  wsScrcpyPort: 8000,
 };
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -124,6 +145,34 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   maxTurns: 0,
   maxBudgetUsd: 0,
 };
+
+// =========================================
+// Project Detection & Dev Server Types
+// =========================================
+
+export type ProjectFramework =
+  | "nextjs" | "vite" | "cra" | "vue-cli" | "nuxt"
+  | "angular" | "svelte" | "remix" | "astro"
+  | "flutter" | "unknown";
+
+export type DevServerStatus = "stopped" | "starting" | "running" | "error" | "port_occupied";
+
+export interface ProjectInfo {
+  framework: ProjectFramework;
+  name: string;
+  devCommand: string;
+  defaultPort: number;
+  isFlutter: boolean;
+  flutterModes?: ("web" | "device")[];
+}
+
+export interface DevServerState {
+  status: DevServerStatus;
+  port: number;
+  url: string | null;
+  error: string | null;
+  pid: number | null;
+}
 
 // =========================================
 // Stream Event Types (NDJSON protocol)
@@ -139,5 +188,6 @@ export type StreamEvent =
   | { type: "tool_use_done"; toolUseId: string; input: Record<string, unknown> }
   | { type: "tool_result"; toolUseId: string; content: string; isError: boolean }
   | { type: "turn_done" }
+  | { type: "plan_approval" }
   | { type: "result"; result: string; costUsd?: number; durationMs?: number }
   | { type: "error"; message: string };

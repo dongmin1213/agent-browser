@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useMemo, useState, memo } from "react";
-import type { UIMessage, ToolResultMessage, ToolUseMessage, PlanApprovalMessage } from "@/types/chat";
+import type { UIMessage, ToolResultMessage, ToolUseMessage, PlanApprovalMessage, AskUserMessage } from "@/types/chat";
 import MessageBubble from "./MessageBubble";
 import ToolBlock from "./ToolBlock";
 import PlanApprovalBlock from "./PlanApprovalBlock";
+import AskUserBlock from "./AskUserBlock";
 
 const SUGGESTED_PROMPTS = [
   { icon: "\uD83D\uDCDD", label: "Explain this codebase", prompt: "Read the project structure and give me a high-level overview of this codebase." },
@@ -19,8 +20,78 @@ interface ChatAreaProps {
   onSendPrompt?: (prompt: string) => void;
   onBranchChat?: (messageIndex: number) => void;
   onPlanApproval?: (approved: boolean, feedback?: string) => void;
+  onAskUserAnswer?: (answers: Record<string, string>) => void;
+  onTogglePin?: (messageId: string) => void;
   chatCost?: number;
   chatDuration?: number;
+}
+
+// =========================================
+// PinnedStrip: collapsible section showing pinned messages
+// =========================================
+
+function PinnedStrip({
+  pinnedMessages,
+  onTogglePin,
+}: {
+  pinnedMessages: UIMessage[];
+  onTogglePin?: (messageId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="mb-4 border border-accent/20 rounded-xl bg-accent-dim/10 overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-accent-dim/20 transition-colors"
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" strokeWidth="0.5" className="text-accent flex-shrink-0">
+          <path d="M9.5 2L14 6.5l-3 1-2.5 3L7 12l-1-2-3.5-1 3-2.5 1-3z" />
+          <path d="M5 11L2 14" fill="none" strokeWidth="1.5" />
+        </svg>
+        <span className="text-xs font-medium text-accent">
+          {pinnedMessages.length} pinned message{pinnedMessages.length !== 1 ? "s" : ""}
+        </span>
+        <svg
+          width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
+          className={`ml-auto text-accent transition-transform ${expanded ? "rotate-180" : ""}`}
+        >
+          <path d="M3 4l2 2 2-2" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="border-t border-accent/10 px-3 py-2 space-y-2 max-h-64 overflow-y-auto">
+          {pinnedMessages.map((msg) => {
+            const content = (msg as { content?: string }).content || "";
+            const preview = content.length > 120 ? content.slice(0, 120) + "..." : content;
+            return (
+              <div key={msg.id} className="flex items-start gap-2 group/pin">
+                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded mt-0.5 flex-shrink-0 ${
+                  msg.role === "user"
+                    ? "bg-accent-dim/30 text-accent"
+                    : "bg-bg-tertiary text-text-secondary"
+                }`}>
+                  {msg.role === "user" ? "You" : "AI"}
+                </span>
+                <p className="text-xs text-text-secondary flex-1 min-w-0 leading-relaxed line-clamp-2">
+                  {preview}
+                </p>
+                {onTogglePin && (
+                  <button
+                    onClick={() => onTogglePin(msg.id)}
+                    className="opacity-0 group-hover/pin:opacity-100 text-text-muted hover:text-error text-[10px] flex-shrink-0 mt-0.5 transition-opacity"
+                    title="Unpin"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // =========================================
@@ -188,7 +259,7 @@ function groupMessages(messages: UIMessage[]): MessageSegment[] {
 // ChatArea
 // =========================================
 
-export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBranchChat, onPlanApproval, chatCost, chatDuration }: ChatAreaProps) {
+export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBranchChat, onPlanApproval, onAskUserAnswer, onTogglePin, chatCost, chatDuration }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -206,6 +277,11 @@ export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBra
   }, [messages]);
 
   const segments = useMemo(() => groupMessages(messages), [messages]);
+
+  const pinnedMessages = useMemo(
+    () => messages.filter((m) => m.pinned && (m.role === "user" || m.role === "assistant")),
+    [messages]
+  );
 
   // Empty state with suggested prompts
   if (messages.length === 0 && !isLoading) {
@@ -240,6 +316,13 @@ export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBra
   return (
     <div className="flex-1 overflow-y-auto px-4 py-6">
       <div className="max-w-3xl mx-auto">
+        {/* Pinned messages strip */}
+        {pinnedMessages.length > 0 && (
+          <PinnedStrip
+            pinnedMessages={pinnedMessages}
+            onTogglePin={onTogglePin}
+          />
+        )}
         {segments.map((segment, i) => {
           if (segment.type === "message") {
             // Render PlanApprovalBlock for plan_approval messages
@@ -250,8 +333,23 @@ export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBra
                   key={segment.msg.id}
                   status={planMsg.status}
                   feedback={planMsg.feedback}
-                  onApprove={() => onPlanApproval?.(true)}
+                  allowedPrompts={planMsg.allowedPrompts}
+                  planContent={planMsg.planContent}
+                  onApprove={(feedback) => onPlanApproval?.(true, feedback)}
                   onReject={(feedback) => onPlanApproval?.(false, feedback)}
+                />
+              );
+            }
+            // Render AskUserBlock for ask_user messages
+            if (segment.msg.role === "ask_user") {
+              const askMsg = segment.msg as AskUserMessage;
+              return (
+                <AskUserBlock
+                  key={segment.msg.id}
+                  questions={askMsg.questions}
+                  status={askMsg.status}
+                  answers={askMsg.answers}
+                  onAnswer={(answers) => onAskUserAnswer?.(answers)}
                 />
               );
             }
@@ -262,6 +360,7 @@ export default memo(function ChatArea({ messages, isLoading, onSendPrompt, onBra
                 toolResults={toolResults}
                 messageIndex={segment.index}
                 onBranch={onBranchChat}
+                onTogglePin={onTogglePin}
               />
             );
           }

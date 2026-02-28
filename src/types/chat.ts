@@ -8,11 +8,13 @@ export type UIMessage =
   | ToolUseMessage
   | ToolResultMessage
   | ErrorMessage
-  | PlanApprovalMessage;
+  | PlanApprovalMessage
+  | AskUserMessage;
 
 interface BaseMessage {
   id: string;
   timestamp: number;
+  pinned?: boolean;
 }
 
 export interface UserMessage extends BaseMessage {
@@ -62,6 +64,22 @@ export interface PlanApprovalMessage extends BaseMessage {
   role: "plan_approval";
   status: "pending" | "approved" | "rejected";
   feedback?: string;
+  allowedPrompts?: { tool: string; prompt: string }[];
+  planContent?: string;
+}
+
+export interface AskUserQuestion {
+  question: string;
+  header: string;
+  options: { label: string; description: string }[];
+  multiSelect: boolean;
+}
+
+export interface AskUserMessage extends BaseMessage {
+  role: "ask_user";
+  status: "pending" | "answered";
+  questions: AskUserQuestion[];
+  answers?: Record<string, string>;
 }
 
 // =========================================
@@ -104,6 +122,7 @@ export interface Chat {
   costUsd: number;
   durationMs: number;
   branchedFrom?: { chatId: string; messageIndex: number };
+  order?: number; // manual sort order (lower = higher in list)
 }
 
 // =========================================
@@ -188,6 +207,7 @@ export type StreamEvent =
   | { type: "tool_use_done"; toolUseId: string; input: Record<string, unknown> }
   | { type: "tool_result"; toolUseId: string; content: string; isError: boolean }
   | { type: "turn_done" }
-  | { type: "plan_approval" }
+  | { type: "plan_approval"; allowedPrompts?: { tool: string; prompt: string }[]; planContent?: string }
+  | { type: "ask_user"; questions: AskUserQuestion[] }
   | { type: "result"; result: string; costUsd?: number; durationMs?: number }
   | { type: "error"; message: string };

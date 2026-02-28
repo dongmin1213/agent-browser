@@ -101,11 +101,20 @@ export async function* runAgent(
   let isStreamingText = false;
   // Map of content block index → tool_use_id for streaming tool inputs
   const toolUseBlockMap = new Map<number, { toolUseId: string; toolName: string }>();
+  // Track assistant text content for plan content capture
+  let currentAssistantText = "";
 
   // ExitPlanMode detection — suppress events and yield plan_approval
   let exitPlanModeDetected = false;
   let exitPlanModeBlockIndex = -1;
   let exitPlanModeToolUseId = "";
+  let exitPlanModeInputBuffer = "";
+
+  // AskUserQuestion detection — suppress events and yield ask_user
+  let askUserDetected = false;
+  let askUserBlockIndex = -1;
+  let askUserToolUseId = "";
+  let askUserInputBuffer = "";
 
   try {
     for await (const message of query({ prompt, options })) {
@@ -134,7 +143,13 @@ export async function* runAgent(
                 exitPlanModeDetected = true;
                 exitPlanModeBlockIndex = event.index;
                 exitPlanModeToolUseId = block.id;
-                // Don't yield tool_use_start for ExitPlanMode
+                break;
+              }
+              // Detect AskUserQuestion — suppress its events
+              if (block.name === "AskUserQuestion") {
+                askUserDetected = true;
+                askUserBlockIndex = event.index;
+                askUserToolUseId = block.id;
                 break;
               }
               toolUseBlockMap.set(event.index, {
@@ -153,10 +168,17 @@ export async function* runAgent(
           case "content_block_delta": {
             const delta = event.delta;
             if (delta?.type === "text_delta" && delta.text) {
+              currentAssistantText += delta.text;
               yield { type: "text_delta", text: delta.text };
             } else if (delta?.type === "input_json_delta" && delta.partial_json) {
-              // Suppress input deltas for ExitPlanMode
+              // Capture and suppress input deltas for ExitPlanMode
               if (exitPlanModeDetected && event.index === exitPlanModeBlockIndex) {
+                exitPlanModeInputBuffer += delta.partial_json;
+                break;
+              }
+              // Capture and suppress input deltas for AskUserQuestion
+              if (askUserDetected && event.index === askUserBlockIndex) {
+                askUserInputBuffer += delta.partial_json;
                 break;
               }
               yield { type: "tool_use_input_delta", partialJson: delta.partial_json };
@@ -194,6 +216,10 @@ export async function* runAgent(
               if (exitPlanModeDetected && block.id === exitPlanModeToolUseId) {
                 continue;
               }
+              // Suppress AskUserQuestion tool_use_done
+              if (askUserDetected && block.id === askUserToolUseId) {
+                continue;
+              }
               // Emit tool_use_done with complete input
               const tracked = toolUseBlockMap.get(
                 content.indexOf(block)
@@ -222,6 +248,10 @@ export async function* runAgent(
         }
         // Reset per-turn state
         toolUseBlockMap.clear();
+        // Don't reset assistant text if we need it for plan content or ask_user
+        if (!exitPlanModeDetected && !askUserDetected) {
+          currentAssistantText = "";
+        }
         yield { type: "turn_done" };
         continue;
       }
@@ -234,6 +264,10 @@ export async function* runAgent(
             if (block.type === "tool_result") {
               // Suppress ExitPlanMode tool_result
               if (exitPlanModeDetected && block.tool_use_id === exitPlanModeToolUseId) {
+                continue;
+              }
+              // Suppress AskUserQuestion tool_result
+              if (askUserDetected && block.tool_use_id === askUserToolUseId) {
                 continue;
               }
               const resultText = Array.isArray(block.content)
@@ -256,7 +290,28 @@ export async function* runAgent(
         // After processing tool results, if ExitPlanMode was detected:
         // yield plan_approval and stop the generator to pause the agent
         if (exitPlanModeDetected) {
-          yield { type: "plan_approval" };
+          let allowedPrompts: { tool: string; prompt: string }[] | undefined;
+          try {
+            const parsed = JSON.parse(exitPlanModeInputBuffer);
+            if (parsed.allowedPrompts && Array.isArray(parsed.allowedPrompts)) {
+              allowedPrompts = parsed.allowedPrompts;
+            }
+          } catch { /* partial JSON — ignore */ }
+          yield { type: "plan_approval", allowedPrompts, planContent: currentAssistantText || undefined };
+          return; // Stop generator — session is saved, can resume later
+        }
+
+        // After processing tool results, if AskUserQuestion was detected:
+        // yield ask_user and stop the generator to pause the agent
+        if (askUserDetected) {
+          let questions: { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }[] = [];
+          try {
+            const parsed = JSON.parse(askUserInputBuffer);
+            if (parsed.questions && Array.isArray(parsed.questions)) {
+              questions = parsed.questions;
+            }
+          } catch { /* partial JSON — ignore */ }
+          yield { type: "ask_user", questions };
           return; // Stop generator — session is saved, can resume later
         }
         continue;
@@ -285,7 +340,33 @@ export async function* runAgent(
   } catch (err) {
     yield {
       type: "error",
-      message: err instanceof Error ? err.message : "Unknown agent error",
+      message: classifyAgentError(err),
     };
   }
+}
+
+function classifyAgentError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+
+  if (lower.includes("enoent") || lower.includes("not found") || lower.includes("not recognized")) {
+    return `Claude CLI not found. Make sure Claude Code CLI is installed and in PATH.\n\nOriginal: ${msg}`;
+  }
+  if (lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
+    return `Rate limited by API. Please wait a moment and try again.\n\nOriginal: ${msg}`;
+  }
+  if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")) {
+    return `Request timed out. The agent took too long to respond.\n\nOriginal: ${msg}`;
+  }
+  if (lower.includes("unauthorized") || lower.includes("401") || lower.includes("auth") || lower.includes("api key")) {
+    return `Authentication failed. Check your Claude CLI auth (run 'claude' to re-authenticate).\n\nOriginal: ${msg}`;
+  }
+  if (lower.includes("network") || lower.includes("econnrefused") || lower.includes("econnreset") || lower.includes("fetch failed")) {
+    return `Network error. Check your internet connection.\n\nOriginal: ${msg}`;
+  }
+  if (lower.includes("overloaded") || lower.includes("503") || lower.includes("529")) {
+    return `API is overloaded. Please try again in a few seconds.\n\nOriginal: ${msg}`;
+  }
+
+  return msg;
 }

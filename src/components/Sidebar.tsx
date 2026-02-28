@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, memo } from "react";
+import { useState, useRef, useCallback, memo } from "react";
 import type { Chat } from "@/types/chat";
 
 interface SidebarProps {
@@ -11,6 +11,8 @@ interface SidebarProps {
   onDeleteChat: (chatId: string) => void;
   onExportChat: (chatId: string, format: "md" | "json") => void;
   onOpenSettings: () => void;
+  onReorderChat: (chatId: string, newIndex: number) => void;
+  onRenameChat: (chatId: string, newTitle: string) => void;
   isOpen: boolean;
   onClose: () => void;
   collapsed: boolean;
@@ -31,6 +33,18 @@ function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
+function sortChats(chats: Chat[]): Chat[] {
+  return [...chats].sort((a, b) => {
+    // If both have order, use order
+    if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+    // If only one has order, it goes first
+    if (a.order !== undefined) return -1;
+    if (b.order !== undefined) return 1;
+    // Otherwise sort by updatedAt descending
+    return b.updatedAt - a.updatedAt;
+  });
+}
+
 export default memo(function Sidebar({
   chats,
   activeChatId,
@@ -39,6 +53,8 @@ export default memo(function Sidebar({
   onDeleteChat,
   onExportChat,
   onOpenSettings,
+  onReorderChat,
+  onRenameChat,
   isOpen,
   onClose,
   collapsed,
@@ -47,7 +63,17 @@ export default memo(function Sidebar({
   const [searchQuery, setSearchQuery] = useState("");
   const [exportMenuId, setExportMenuId] = useState<string | null>(null);
 
-  const sortedChats = [...chats].sort((a, b) => b.updatedAt - a.updatedAt);
+  // Drag state
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragStartY = useRef<number>(0);
+
+  // Rename state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  const sortedChats = sortChats(chats);
 
   const filteredChats = searchQuery.trim()
     ? sortedChats.filter((chat) => {
@@ -58,6 +84,66 @@ export default memo(function Sidebar({
         );
       })
     : sortedChats;
+
+  // ---- Drag handlers ----
+  const handleDragStart = useCallback((e: React.DragEvent, chatId: string) => {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", chatId);
+    setDragId(chatId);
+    dragStartY.current = e.clientY;
+    // Make drag image semi-transparent
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = "0.5";
+    }
+  }, []);
+
+  const handleDragEnd = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = "1";
+    }
+    setDragId(null);
+    setDragOverIndex(null);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverIndex(index);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    const chatId = e.dataTransfer.getData("text/plain");
+    if (chatId) {
+      onReorderChat(chatId, targetIndex);
+    }
+    setDragId(null);
+    setDragOverIndex(null);
+  }, [onReorderChat]);
+
+  // ---- Rename handlers ----
+  const startRename = useCallback((chatId: string, currentTitle: string) => {
+    setEditingId(chatId);
+    setEditValue(currentTitle);
+    // Focus input after render
+    setTimeout(() => editInputRef.current?.focus(), 10);
+  }, []);
+
+  const commitRename = useCallback(() => {
+    if (editingId && editValue.trim()) {
+      onRenameChat(editingId, editValue.trim());
+    }
+    setEditingId(null);
+    setEditValue("");
+  }, [editingId, editValue, onRenameChat]);
+
+  const cancelRename = useCallback(() => {
+    setEditingId(null);
+    setEditValue("");
+  }, []);
+
+  const isDragging = dragId !== null;
+  const isSearching = searchQuery.trim().length > 0;
 
   return (
     <>
@@ -182,95 +268,157 @@ export default memo(function Sidebar({
                   {searchQuery ? "No results found" : "No conversations yet"}
                 </p>
               ) : (
-                filteredChats.map((chat) => (
-                  <div
-                    key={chat.id}
-                    onClick={() => {
-                      onSelectChat(chat.id);
-                      onClose();
-                    }}
-                    className={`
-                      group flex items-center px-2 py-2 mx-1.5 rounded-lg cursor-pointer
-                      transition-colors text-xs relative
-                      ${
-                        chat.id === activeChatId
-                          ? "bg-bg-tertiary text-text-primary"
-                          : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                      }
-                    `}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate font-medium">{chat.title}</div>
-                      <div className="text-[10px] text-text-muted mt-0.5 flex items-center gap-1">
-                        {chat.cwd && (
-                          <>
-                            <span className="truncate max-w-[100px]">{chat.cwd.split(/[\\/]/).pop()}</span>
-                            <span>&middot;</span>
-                          </>
+                filteredChats.map((chat, index) => {
+                  const isEditing = editingId === chat.id;
+                  const isDraggedOver = dragOverIndex === index && dragId !== chat.id;
+
+                  return (
+                    <div
+                      key={chat.id}
+                      draggable={!isSearching && !isEditing}
+                      onDragStart={(e) => handleDragStart(e, chat.id)}
+                      onDragEnd={handleDragEnd}
+                      onDragOver={(e) => handleDragOver(e, index)}
+                      onDrop={(e) => handleDrop(e, index)}
+                      onClick={() => {
+                        if (!isEditing) {
+                          onSelectChat(chat.id);
+                          onClose();
+                        }
+                      }}
+                      onDoubleClick={(e) => {
+                        e.preventDefault();
+                        startRename(chat.id, chat.title);
+                      }}
+                      className={`
+                        group flex items-center px-2 py-2 mx-1.5 rounded-lg cursor-pointer
+                        transition-all text-xs relative
+                        ${isDraggedOver ? "border-t-2 border-accent" : "border-t-2 border-transparent"}
+                        ${dragId === chat.id ? "opacity-50" : ""}
+                        ${
+                          chat.id === activeChatId
+                            ? "bg-bg-tertiary text-text-primary"
+                            : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                        }
+                      `}
+                    >
+                      {/* Drag handle — visible on hover */}
+                      {!isSearching && (
+                        <div className="opacity-0 group-hover:opacity-60 cursor-grab active:cursor-grabbing mr-1 flex-shrink-0 text-text-muted">
+                          <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">
+                            <circle cx="2" cy="2" r="1" />
+                            <circle cx="6" cy="2" r="1" />
+                            <circle cx="2" cy="6" r="1" />
+                            <circle cx="6" cy="6" r="1" />
+                            <circle cx="2" cy="10" r="1" />
+                            <circle cx="6" cy="10" r="1" />
+                          </svg>
+                        </div>
+                      )}
+
+                      <div className="flex-1 min-w-0">
+                        {isEditing ? (
+                          <input
+                            ref={editInputRef}
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={commitRename}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitRename();
+                              if (e.key === "Escape") cancelRename();
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full bg-bg-primary border border-accent rounded px-1.5 py-0.5 text-xs text-text-primary focus:outline-none"
+                            autoFocus
+                          />
+                        ) : (
+                          <div className="truncate font-medium">{chat.title}</div>
                         )}
-                        {formatTime(chat.updatedAt)}
-                        {chat.costUsd > 0 && (
-                          <>
-                            <span>&middot;</span>
-                            <span>${chat.costUsd.toFixed(4)}</span>
-                          </>
-                        )}
+                        <div className="text-[10px] text-text-muted mt-0.5 flex items-center gap-1">
+                          {chat.cwd && (
+                            <>
+                              <span className="truncate max-w-[100px]">{chat.cwd.split(/[\\/]/).pop()}</span>
+                              <span>&middot;</span>
+                            </>
+                          )}
+                          {formatTime(chat.updatedAt)}
+                          {chat.costUsd > 0 && (
+                            <>
+                              <span>&middot;</span>
+                              <span>${chat.costUsd.toFixed(4)}</span>
+                            </>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 flex-shrink-0 ml-1">
-                      {/* Export button */}
-                      <div className="relative">
+                      <div className={`${isDragging ? "hidden" : "opacity-0 group-hover:opacity-100"} flex items-center gap-0.5 flex-shrink-0 ml-1`}>
+                        {/* Rename button */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setExportMenuId(exportMenuId === chat.id ? null : chat.id);
+                            startRename(chat.id, chat.title);
                           }}
                           className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-all"
-                          title="Export"
+                          title="Rename"
                         >
                           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                            <path d="M8 2v8M4 6l4-4 4 4M2 12h12" />
+                            <path d="M11 2l3 3-9 9H2v-3z" />
+                            <path d="M9 4l3 3" />
                           </svg>
                         </button>
-                        {exportMenuId === chat.id && (
-                          <div className="absolute right-0 top-6 bg-bg-secondary border border-border rounded-md shadow-lg z-10 py-1 min-w-[100px]">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onExportChat(chat.id, "md");
-                                setExportMenuId(null);
-                              }}
-                              className="w-full px-3 py-1 text-[11px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                            >
-                              Markdown
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onExportChat(chat.id, "json");
-                                setExportMenuId(null);
-                              }}
-                              className="w-full px-3 py-1 text-[11px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                            >
-                              JSON
-                            </button>
-                          </div>
-                        )}
+                        {/* Export button */}
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExportMenuId(exportMenuId === chat.id ? null : chat.id);
+                            }}
+                            className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-all"
+                            title="Export"
+                          >
+                            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                              <path d="M8 2v8M4 6l4-4 4 4M2 12h12" />
+                            </svg>
+                          </button>
+                          {exportMenuId === chat.id && (
+                            <div className="absolute right-0 top-6 bg-bg-secondary border border-border rounded-md shadow-lg z-10 py-1 min-w-[100px]">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onExportChat(chat.id, "md");
+                                  setExportMenuId(null);
+                                }}
+                                className="w-full px-3 py-1 text-[11px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                              >
+                                Markdown
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onExportChat(chat.id, "json");
+                                  setExportMenuId(null);
+                                }}
+                                className="w-full px-3 py-1 text-[11px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                              >
+                                JSON
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {/* Delete button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteChat(chat.id);
+                          }}
+                          className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-error hover:bg-error/10 transition-all text-[10px]"
+                          title="Delete"
+                        >
+                          &#x2715;
+                        </button>
                       </div>
-                      {/* Delete button */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteChat(chat.id);
-                        }}
-                        className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-error hover:bg-error/10 transition-all text-[10px]"
-                        title="Delete"
-                      >
-                        &#x2715;
-                      </button>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
 

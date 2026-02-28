@@ -5,27 +5,37 @@ import { useState } from "react";
 interface PlanApprovalBlockProps {
   status: "pending" | "approved" | "rejected";
   feedback?: string;
-  onApprove?: () => void;
+  allowedPrompts?: { tool: string; prompt: string }[];
+  planContent?: string;
+  onApprove?: (feedback?: string) => void;
   onReject?: (feedback: string) => void;
 }
 
 export default function PlanApprovalBlock({
   status,
   feedback,
+  allowedPrompts,
+  planContent,
   onApprove,
   onReject,
 }: PlanApprovalBlockProps) {
-  const [showFeedback, setShowFeedback] = useState(false);
+  const [mode, setMode] = useState<"default" | "approve_feedback" | "reject_feedback">("default");
   const [feedbackText, setFeedbackText] = useState("");
+  const [showPlan, setShowPlan] = useState(false);
 
   // ── Approved state ──
   if (status === "approved") {
     return (
-      <div className="my-3 flex items-center gap-2 px-4 py-3 rounded-lg bg-success/10 border border-success/20">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-success flex-shrink-0">
-          <path d="M3 8.5l3.5 3.5L13 4" />
-        </svg>
-        <span className="text-sm text-success font-medium">Plan approved</span>
+      <div className="my-3 px-4 py-3 rounded-lg bg-success/10 border border-success/20 space-y-1">
+        <div className="flex items-center gap-2">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-success flex-shrink-0">
+            <path d="M3 8.5l3.5 3.5L13 4" />
+          </svg>
+          <span className="text-sm text-success font-medium">Plan approved</span>
+        </div>
+        {feedback && (
+          <p className="text-xs text-text-secondary ml-6">{feedback}</p>
+        )}
       </div>
     );
   }
@@ -47,7 +57,7 @@ export default function PlanApprovalBlock({
     );
   }
 
-  // ── Pending state (with optional feedback input) ──
+  // ── Pending state ──
   return (
     <div className="my-3 rounded-lg border border-accent/30 bg-accent/5 overflow-hidden">
       {/* Header */}
@@ -59,24 +69,74 @@ export default function PlanApprovalBlock({
         <span className="text-sm font-medium text-text-primary">
           Plan ready for review
         </span>
+
+        {/* View plan toggle */}
+        {planContent && (
+          <button
+            onClick={() => setShowPlan(!showPlan)}
+            className="ml-auto flex items-center gap-1 px-2 py-0.5 text-[11px] text-accent hover:text-accent-hover transition-colors rounded"
+          >
+            <svg
+              width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
+              className={`transition-transform ${showPlan ? "rotate-180" : ""}`}
+            >
+              <path d="M3 4l2 2 2-2" />
+            </svg>
+            {showPlan ? "Hide plan" : "View plan"}
+          </button>
+        )}
       </div>
 
-      {/* Feedback input (shown when reject is clicked) */}
-      {showFeedback && (
+      {/* Plan content (collapsible) */}
+      {showPlan && planContent && (
+        <div className="px-4 pb-3">
+          <div className="rounded-md bg-bg-primary border border-border p-3 max-h-64 overflow-y-auto">
+            <pre className="text-xs text-text-secondary whitespace-pre-wrap break-words font-sans leading-relaxed">
+              {planContent}
+            </pre>
+          </div>
+        </div>
+      )}
+
+      {/* Allowed Prompts (permissions needed) */}
+      {allowedPrompts && allowedPrompts.length > 0 && (
+        <div className="px-4 pb-2">
+          <div className="text-[11px] text-text-muted mb-1.5 font-medium uppercase tracking-wider">
+            Permissions needed
+          </div>
+          <div className="space-y-1">
+            {allowedPrompts.map((p, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs">
+                <span className="px-1.5 py-0.5 bg-accent/10 text-accent rounded text-[10px] font-mono flex-shrink-0">
+                  {p.tool}
+                </span>
+                <span className="text-text-secondary">{p.prompt}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Feedback textarea (shown for approve_feedback or reject_feedback) */}
+      {mode !== "default" && (
         <div className="px-4 pb-2">
           <textarea
             value={feedbackText}
             onChange={(e) => setFeedbackText(e.target.value)}
-            placeholder="What should be changed?"
+            placeholder={mode === "approve_feedback" ? "Any additional comments or suggestions..." : "What should be changed?"}
             className="w-full px-3 py-2 text-sm bg-bg-primary border border-border rounded-md resize-none focus:outline-none focus:border-accent/50 text-text-primary placeholder:text-text-muted"
             rows={2}
             autoFocus
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && feedbackText.trim()) {
-                onReject?.(feedbackText.trim());
+                if (mode === "approve_feedback") {
+                  onApprove?.(feedbackText.trim());
+                } else {
+                  onReject?.(feedbackText.trim());
+                }
               }
               if (e.key === "Escape") {
-                setShowFeedback(false);
+                setMode("default");
                 setFeedbackText("");
               }
             }}
@@ -86,10 +146,10 @@ export default function PlanApprovalBlock({
 
       {/* Action buttons */}
       <div className="px-4 pb-3 flex items-center gap-2">
-        {!showFeedback ? (
+        {mode === "default" ? (
           <>
             <button
-              onClick={onApprove}
+              onClick={() => onApprove?.()}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-success/15 text-success hover:bg-success/25 transition-colors"
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -98,7 +158,17 @@ export default function PlanApprovalBlock({
               Approve
             </button>
             <button
-              onClick={() => setShowFeedback(true)}
+              onClick={() => setMode("approve_feedback")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-success/5 text-success/70 hover:bg-success/15 hover:text-success transition-colors"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="flex-shrink-0">
+                <path d="M12 3l1 1-7 7-3 1 1-3 7-7z" />
+                <path d="M10.5 4.5l1 1" />
+              </svg>
+              Approve with comments
+            </button>
+            <button
+              onClick={() => setMode("reject_feedback")}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-error/10 text-error/80 hover:bg-error/20 hover:text-error transition-colors"
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -111,18 +181,24 @@ export default function PlanApprovalBlock({
           <>
             <button
               onClick={() => {
-                if (feedbackText.trim()) {
+                if (mode === "approve_feedback") {
+                  onApprove?.(feedbackText.trim() || undefined);
+                } else if (feedbackText.trim()) {
                   onReject?.(feedbackText.trim());
                 }
               }}
-              disabled={!feedbackText.trim()}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-error/15 text-error hover:bg-error/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled={mode === "reject_feedback" && !feedbackText.trim()}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                mode === "approve_feedback"
+                  ? "bg-success/15 text-success hover:bg-success/25"
+                  : "bg-error/15 text-error hover:bg-error/25"
+              }`}
             >
-              Send feedback
+              {mode === "approve_feedback" ? "Approve with feedback" : "Send feedback"}
             </button>
             <button
               onClick={() => {
-                setShowFeedback(false);
+                setMode("default");
                 setFeedbackText("");
               }}
               className="px-3 py-1.5 text-xs text-text-muted hover:text-text-primary transition-colors"

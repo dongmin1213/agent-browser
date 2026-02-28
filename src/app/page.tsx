@@ -10,6 +10,7 @@ import type {
   ToolResultMessage,
   ErrorMessage,
   PlanApprovalMessage,
+  AskUserMessage,
   AppSettings,
   Attachment,
 } from "@/types/chat";
@@ -31,18 +32,25 @@ import {
   generateTitle,
   loadAppSettings,
   saveAppSettings,
+  reorderChats,
+  togglePinMessage,
 } from "@/lib/store";
 import Sidebar from "@/components/Sidebar";
 import ChatArea from "@/components/ChatArea";
-import MessageInput, { type SlashCommand } from "@/components/MessageInput";
+import MessageInput from "@/components/MessageInput";
+import { SLASH_COMMANDS } from "@/lib/slash-commands";
 import TopBar from "@/components/TopBar";
 import ExplorerPanel from "@/components/ExplorerPanel";
 import PreviewPanel from "@/components/PreviewPanel";
 import SettingsModal from "@/components/SettingsModal";
+import { ToastProvider, useToast } from "@/components/Toast";
 
 // =========================================
 // NDJSON Stream Reader
 // =========================================
+
+const STREAM_TOTAL_TIMEOUT = 10 * 60 * 1000; // 10 minutes max
+const STREAM_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes no activity
 
 async function readNDJSONStream(
   response: Response,
@@ -53,11 +61,28 @@ async function readNDJSONStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  const startTime = Date.now();
+  let lastActivity = Date.now();
+
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      // Check total timeout
+      if (Date.now() - startTime > STREAM_TOTAL_TIMEOUT) {
+        reader.cancel();
+        throw new Error("Stream timeout: response took too long (3 min limit)");
+      }
+
+      // Race between read and idle timeout
+      const readPromise = reader.read();
+      const idlePromise = new Promise<never>((_, reject) => {
+        const remaining = STREAM_IDLE_TIMEOUT - (Date.now() - lastActivity);
+        setTimeout(() => reject(new Error("Stream idle: no data for 60 seconds")), Math.max(remaining, 0));
+      });
+
+      const { done, value } = await Promise.race([readPromise, idlePromise]);
       if (done) break;
 
+      lastActivity = Date.now();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -112,6 +137,15 @@ function downloadFile(content: string, filename: string, type: string) {
 // =========================================
 
 export default function Home() {
+  return (
+    <ToastProvider>
+      <HomeInner />
+    </ToastProvider>
+  );
+}
+
+function HomeInner() {
+  const { addToast } = useToast();
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [loadingChatIds, setLoadingChatIds] = useState<Set<string>>(new Set());
@@ -121,7 +155,7 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [defaultCwd, setDefaultCwd] = useState("");
   const [rightPanel, setRightPanel] = useState<"explorer" | "preview" | null>("explorer");
-  const [rightPanelWidth, setRightPanelWidth] = useState(50);
+  const [rightPanelWidth, setRightPanelWidth] = useState(66);
   const isDraggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -246,11 +280,16 @@ export default function Home() {
   // Save to localStorage when chats change
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
+  const quotaWarned = useRef(false);
   useEffect(() => {
     if (chats.length > 0) {
-      saveChats(chats);
+      const ok = saveChats(chats);
+      if (!ok && !quotaWarned.current) {
+        quotaWarned.current = true;
+        addToast("warning", "Storage almost full. Some data may not be saved. Consider exporting and clearing old chats.");
+      }
     }
-  }, [chats]);
+  }, [chats, addToast]);
 
   // Get active chat + derived model/cwd
   const activeChat = chats.find((c) => c.id === activeChatId) || null;
@@ -320,6 +359,19 @@ export default function Home() {
   const handleChatSettingsChange = useCallback((settings: Chat["settings"]) => {
     if (!activeChatId) return;
     setChats((prev) => updateChatSettings(prev, activeChatId, { settings }));
+  }, [activeChatId]);
+
+  const handleReorderChat = useCallback((chatId: string, newIndex: number) => {
+    setChats((prev) => reorderChats(prev, chatId, newIndex));
+  }, []);
+
+  const handleRenameChat = useCallback((chatId: string, newTitle: string) => {
+    setChats((prev) => updateChatTitle(prev, chatId, newTitle));
+  }, []);
+
+  const handleTogglePin = useCallback((messageId: string) => {
+    if (!activeChatId) return;
+    setChats((prev) => togglePinMessage(prev, activeChatId, messageId));
   }, [activeChatId]);
 
   // =========================================
@@ -484,15 +536,49 @@ export default function Home() {
               return { ...c, messages: cleaned };
             })
           );
-          // Add PlanApprovalMessage
+          // Add PlanApprovalMessage with allowedPrompts and plan content
           const planMsg: PlanApprovalMessage = {
             id: crypto.randomUUID(),
             role: "plan_approval",
             status: "pending",
             timestamp: Date.now(),
+            allowedPrompts: event.allowedPrompts,
+            planContent: event.planContent,
           };
           setChats((prev) => addMessageToChat(prev, chatId, planMsg));
           // Clean up loading state (no result event follows)
+          setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
+          streamStateRef.current.delete(chatId);
+          break;
+        }
+
+        case "ask_user": {
+          // Clean up any stuck streaming states
+          setChats((prev) =>
+            prev.map((c) => {
+              if (c.id !== chatId) return c;
+              const cleaned = c.messages.map((m) => {
+                if (m.role === "assistant" && (m as AssistantTextMessage).isStreaming) {
+                  return { ...m, isStreaming: false };
+                }
+                if (m.role === "tool_use" && (m as ToolUseMessage).isRunning) {
+                  return { ...m, isRunning: false };
+                }
+                return m;
+              });
+              return { ...c, messages: cleaned };
+            })
+          );
+          // Add AskUserMessage
+          const askMsg: AskUserMessage = {
+            id: crypto.randomUUID(),
+            role: "ask_user",
+            status: "pending",
+            questions: event.questions,
+            timestamp: Date.now(),
+          };
+          setChats((prev) => addMessageToChat(prev, chatId, askMsg));
+          // Clean up loading state
           setLoadingChatIds((prev) => { const next = new Set(prev); next.delete(chatId); return next; });
           streamStateRef.current.delete(chatId);
           break;
@@ -684,7 +770,7 @@ export default function Home() {
         const data = await res.json();
         imagePaths = data.paths || [];
       } catch {
-        // Fall back: skip images on upload failure
+        addToast("warning", "Image upload failed. Images will not be included.");
       }
     }
 
@@ -713,15 +799,7 @@ export default function Home() {
   // Slash Commands
   // =========================================
 
-  const slashCommands: SlashCommand[] = useMemo(() => [
-    { name: "clear", description: "Clear all messages in current chat" },
-    { name: "compact", description: "Summarize conversation to save context", args: "<instructions?>" },
-    { name: "download", description: "Download a file from server", args: "<file path>" },
-    { name: "model", description: "Switch model (opus/sonnet/haiku)", args: "<model>" },
-    { name: "help", description: "Show available commands" },
-    { name: "usage", description: "Show token usage and cost" },
-    { name: "export", description: "Export chat (md/json)", args: "<format?>" },
-  ], []);
+  const slashCommands = useMemo(() => SLASH_COMMANDS, []);
 
   const handleCommand = useCallback((command: string, args: string) => {
     const chatId = activeChatIdRef.current;
@@ -1011,16 +1089,53 @@ export default function Home() {
 
     // Resume session with approval/rejection message
     if (approved) {
-      await doSend(
-        "The user approved the plan. Proceed with implementation.",
-        "Plan approved"
-      );
+      const msg = feedback
+        ? `The user approved the plan with these additional comments: ${feedback}. Proceed with implementation, incorporating the user's feedback.`
+        : "The user approved the plan. Proceed with implementation.";
+      const display = feedback ? `Plan approved: ${feedback}` : "Plan approved";
+      await doSend(msg, display);
     } else {
       await doSend(
         `The user rejected the plan. Please revise based on this feedback: ${feedback}`,
         `Plan rejected: ${feedback}`
       );
     }
+  }, [doSend]);
+
+  // =========================================
+  // AskUserQuestion Answer Handler
+  // =========================================
+
+  const handleAskUserAnswer = useCallback(async (answers: Record<string, string>) => {
+    const chatId = activeChatIdRef.current;
+    if (!chatId) return;
+
+    // Update AskUserMessage status
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id !== chatId) return c;
+        return {
+          ...c,
+          messages: c.messages.map((m) =>
+            m.role === "ask_user" && (m as AskUserMessage).status === "pending"
+              ? { ...m, status: "answered", answers } as AskUserMessage
+              : m
+          ),
+        };
+      })
+    );
+
+    // Format answers as human-readable text for session resume
+    const answerLines = Object.entries(answers)
+      .map(([question, answer]) => `Q: ${question}\nA: ${answer}`)
+      .join("\n\n");
+
+    const displayText = Object.values(answers).join(", ").slice(0, 80);
+
+    await doSend(
+      `The user answered the questions:\n\n${answerLines}`,
+      `Answered: ${displayText}`
+    );
   }, [doSend]);
 
   // =========================================
@@ -1056,6 +1171,8 @@ export default function Home() {
         onDeleteChat={handleDeleteChat}
         onExportChat={handleExportChat}
         onOpenSettings={handleOpenSettings}
+        onReorderChat={handleReorderChat}
+        onRenameChat={handleRenameChat}
         isOpen={sidebarOpen}
         onClose={handleCloseSidebar}
         collapsed={sidebarCollapsed}
@@ -1085,6 +1202,8 @@ export default function Home() {
               onSendPrompt={handleSendDirect}
               onBranchChat={handleBranchChat}
               onPlanApproval={handlePlanApproval}
+              onAskUserAnswer={handleAskUserAnswer}
+              onTogglePin={handleTogglePin}
               chatCost={activeChat?.costUsd}
               chatDuration={activeChat?.durationMs}
             />

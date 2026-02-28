@@ -302,6 +302,9 @@ export function startServer(
   };
   runningServers.set(key, server);
 
+  // settled = once status transitions to running or error, stop re-processing
+  let settled = false;
+
   const handleOutput = (stream: "stdout" | "stderr") => (data: Buffer) => {
     const text = data.toString();
     const lines = text.split("\n").filter(Boolean);
@@ -310,11 +313,14 @@ export function startServer(
       appendLog(server, line);
       emitter.emit("log", { type: "log", text: line, stream } as LogEvent);
 
+      if (settled) continue;
+
       // Check ready patterns (both stdout and stderr — Next.js outputs to stderr)
       if (server.status === "starting") {
         for (const pattern of READY_PATTERNS) {
           if (pattern.test(line)) {
             server.status = "running";
+            settled = true;
             emitter.emit("log", {
               type: "status",
               status: "running",
@@ -327,11 +333,12 @@ export function startServer(
 
       // Only check FATAL error patterns when still starting
       // Once running, stderr output is normal (warnings, etc.)
-      if (server.status === "starting") {
+      if (server.status === "starting" && !settled) {
         for (const pattern of FATAL_ERROR_PATTERNS) {
           if (pattern.test(line)) {
             server.status = "error";
             server.error = line;
+            settled = true;
             emitter.emit("log", {
               type: "status",
               status: "error",

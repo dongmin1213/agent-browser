@@ -51,6 +51,7 @@ function FolderTree({
   const [items, setItems] = useState<FileItem[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const hasLoaded = useRef(false);
 
   const load = useCallback(async () => {
@@ -59,8 +60,15 @@ function FolderTree({
     try {
       const res = await fetch(`/api/files?dir=${encodeURIComponent(dir)}`);
       const data = await res.json();
-      setItems(data.items || []);
-    } catch {
+      if (data.error && (!data.items || data.items.length === 0)) {
+        setError(data.error);
+        setItems([]);
+      } else {
+        setError(null);
+        setItems(data.items || []);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load");
       setItems([]);
     }
     setLoading(false);
@@ -73,6 +81,15 @@ function FolderTree({
 
   if (loading && depth === 0) {
     return <div className="text-xs text-text-muted px-3 py-2">Loading...</div>;
+  }
+
+  if (error && depth === 0) {
+    return (
+      <div className="px-3 py-2 text-xs text-red-400">
+        {error}
+        <button onClick={load} className="ml-2 text-accent hover:text-accent-hover underline">Retry</button>
+      </div>
+    );
   }
 
   return (
@@ -183,49 +200,72 @@ export default memo(function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelP
     selectedFileRef.current = selectedFile;
   }, [selectedFile]);
 
-  // SSE file watcher - connects when Explorer mounts, disconnects on unmount
+  // SSE file watcher with exponential backoff reconnect
+  const [sseStatus, setSseStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
+
   useEffect(() => {
-    const eventSource = new EventSource(
-      `/api/watch?dir=${encodeURIComponent(cwd)}`
-    );
+    let cancelled = false;
+    let es: EventSource | null = null;
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const MAX_RETRIES = 5;
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "change") {
-          // Refresh all expanded folder trees
-          setRefreshCounter((c) => c + 1);
+    function connect() {
+      if (cancelled) return;
+      es = new EventSource(`/api/watch?dir=${encodeURIComponent(cwd)}`);
 
-          // If currently previewed file was modified, refresh its content
-          const currentFile = selectedFileRef.current;
-          if (currentFile && Array.isArray(data.files)) {
-            const normalizedCurrent = currentFile.replace(/\\/g, "/");
-            const wasModified = data.files.some(
-              (f: string) => f.replace(/\\/g, "/") === normalizedCurrent
-            );
-            if (wasModified) {
-              fetch(`/api/file-content?path=${encodeURIComponent(currentFile)}`)
-                .then((res) => res.json())
-                .then((d) => {
-                  setFileContent(d.content || d.error || "");
-                  setFileLanguage(d.language || "text");
-                })
-                .catch(() => {});
+      es.onopen = () => {
+        retryCount = 0;
+        if (!cancelled) setSseStatus("connected");
+      };
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "change") {
+            setRefreshCounter((c) => c + 1);
+            const currentFile = selectedFileRef.current;
+            if (currentFile && Array.isArray(data.files)) {
+              const normalizedCurrent = currentFile.replace(/\\/g, "/");
+              const wasModified = data.files.some(
+                (f: string) => f.replace(/\\/g, "/") === normalizedCurrent
+              );
+              if (wasModified) {
+                fetch(`/api/file-content?path=${encodeURIComponent(currentFile)}`)
+                  .then((res) => res.json())
+                  .then((d) => {
+                    setFileContent(d.content || d.error || "");
+                    setFileLanguage(d.language || "text");
+                  })
+                  .catch(() => {});
+              }
             }
           }
+        } catch {
+          // Ignore parse errors
         }
-      } catch {
-        // Ignore parse errors
-      }
-    };
+      };
 
-    // Prevent [object Event] unhandled rejection
-    eventSource.onerror = () => {
-      // SSE auto-reconnects; silently ignore connection errors
-    };
+      es.onerror = () => {
+        es?.close();
+        if (cancelled) return;
+        if (retryCount < MAX_RETRIES) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 16000);
+          retryCount++;
+          setSseStatus("reconnecting");
+          retryTimer = setTimeout(connect, delay);
+        } else {
+          setSseStatus("disconnected");
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      eventSource.close();
+      cancelled = true;
+      es?.close();
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [cwd]);
 
@@ -276,8 +316,21 @@ export default memo(function ExplorerPanel({ cwd, onFileSelect }: ExplorerPanelP
         className="overflow-y-auto border-r border-border flex-shrink-0"
         style={{ width: selectedFile ? `${treeWidth}%` : "100%" }}
       >
-        <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-          Explorer
+        <div className="flex items-center gap-1.5 px-3 py-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Explorer</span>
+          {sseStatus === "reconnecting" && (
+            <span className="text-[9px] text-yellow-400" title="Reconnecting file watcher...">
+              <svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor" className="animate-spin inline">
+                <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10A5 5 0 018 3z" opacity="0.3" />
+                <path d="M8 1a7 7 0 017 7h-2a5 5 0 00-5-5V1z" />
+              </svg>
+            </span>
+          )}
+          {sseStatus === "disconnected" && (
+            <span className="text-[9px] text-red-400" title="File watcher disconnected">
+              <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><circle cx="4" cy="4" r="3" /></svg>
+            </span>
+          )}
         </div>
         <FolderTree
           dir={cwd}

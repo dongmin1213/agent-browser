@@ -201,3 +201,19 @@ code {
 .animate-spin {
   animation: spin 1s linear infinite;
 }
+
+/* Toast animations */
+@keyframes toast-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes toast-slide-out {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(100%); opacity: 0; }
+}
+.toast-enter {
+  animation: toast-slide-in 0.3s ease-out forwards;
+}
+.toast-exit {
+  animation: toast-slide-out 0.3s ease-in forwards;
+}

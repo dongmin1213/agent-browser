@@ -25,8 +25,9 @@ export function loadChats(): Chat[] {
   }
 }
 
-export function saveChats(chats: Chat[]): void {
-  if (typeof window === "undefined") return;
+/** Returns true if saved OK, false if quota exceeded (fallback used or failed entirely). */
+export function saveChats(chats: Chat[]): boolean {
+  if (typeof window === "undefined") return true;
   // Strip any remaining base64 data URLs from images to prevent localStorage overflow
   const sanitized = chats.map((chat) => ({
     ...chat,
@@ -47,6 +48,7 @@ export function saveChats(chats: Chat[]): void {
   }));
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+    return true;
   } catch {
     // localStorage quota exceeded — try saving without images at all
     const noImages = sanitized.map((chat) => ({
@@ -59,8 +61,9 @@ export function saveChats(chats: Chat[]): void {
     }));
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(noImages));
+      return false; // Saved but with degraded data
     } catch {
-      // If still failing, ignore
+      return false; // Complete failure
     }
   }
 }
@@ -218,6 +221,59 @@ export function updateChatCost(
           ...c,
           costUsd: c.costUsd + costUsd,
           durationMs: c.durationMs + durationMs,
+          updatedAt: Date.now(),
+        }
+      : c
+  );
+}
+
+// =========================================
+// Reorder Chats (drag & drop)
+// =========================================
+
+export function reorderChats(
+  chats: Chat[],
+  chatId: string,
+  newIndex: number
+): Chat[] {
+  // Sort by current order to get display order
+  const sorted = [...chats].sort((a, b) => {
+    if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+    if (a.order !== undefined) return -1;
+    if (b.order !== undefined) return 1;
+    return b.updatedAt - a.updatedAt;
+  });
+
+  const oldIndex = sorted.findIndex((c) => c.id === chatId);
+  if (oldIndex === -1 || oldIndex === newIndex) return chats;
+
+  // Move item
+  const [moved] = sorted.splice(oldIndex, 1);
+  sorted.splice(newIndex, 0, moved);
+
+  // Reassign order values
+  const orderMap = new Map<string, number>();
+  sorted.forEach((c, i) => orderMap.set(c.id, i));
+
+  return chats.map((c) => ({ ...c, order: orderMap.get(c.id) ?? 0 }));
+}
+
+// =========================================
+// Toggle Pin Message
+// =========================================
+
+export function togglePinMessage(
+  chats: Chat[],
+  chatId: string,
+  messageId: string
+): Chat[] {
+  return chats.map((c) =>
+    c.id === chatId
+      ? {
+          ...c,
+          messages: c.messages.map((m) =>
+            m.id === messageId ? { ...m, pinned: !m.pinned } : m
+          ),
           updatedAt: Date.now(),
         }
       : c

@@ -2,12 +2,8 @@
 
 import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, DragEvent, ClipboardEvent } from "react";
 import type { Attachment } from "@/types/chat";
-
-export interface SlashCommand {
-  name: string;
-  description: string;
-  args?: string; // placeholder for argument (e.g., "<instructions>")
-}
+import type { SlashCommand } from "@/lib/slash-commands";
+export type { SlashCommand } from "@/lib/slash-commands";
 
 interface MessageInputProps {
   value: string;
@@ -29,6 +25,40 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onload = () => resolve(reader.result as string);
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+// Helper: compress image — resize to max dimension & convert to JPEG
+const MAX_IMAGE_DIMENSION = 1920;
+const IMAGE_QUALITY = 0.8;
+
+function compressImage(dataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+
+      // Only resize if larger than max dimension
+      if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+        const ratio = Math.min(MAX_IMAGE_DIMENSION / width, MAX_IMAGE_DIMENSION / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(dataUrl); return; }
+
+      ctx.drawImage(img, 0, 0, width, height);
+      const compressed = canvas.toDataURL("image/jpeg", IMAGE_QUALITY);
+
+      // Use compressed only if actually smaller
+      resolve(compressed.length < dataUrl.length ? compressed : dataUrl);
+    };
+    img.onerror = () => resolve(dataUrl); // fallback to original
+    img.src = dataUrl;
   });
 }
 
@@ -157,12 +187,12 @@ export default function MessageInput({
       const file = item.getAsFile();
       if (!file) continue;
       try {
-        const dataUrl = await readFileAsDataUrl(file);
-        const ext = file.type.split("/")[1] || "png";
-        const name = `pasted-image-${Date.now()}.${ext}`;
+        const rawDataUrl = await readFileAsDataUrl(file);
+        const dataUrl = await compressImage(rawDataUrl);
+        const name = `pasted-image-${Date.now()}.jpg`;
         newAttachments.push({
           name,
-          content: dataUrl, // base64 data URL
+          content: dataUrl,
           type: "image",
           dataUrl,
         });
@@ -179,9 +209,10 @@ export default function MessageInput({
     const newAttachments: Attachment[] = [];
     for (const file of Array.from(files)) {
       if (file.type.startsWith("image/")) {
-        // Image file
+        // Image file — compress before attaching
         try {
-          const dataUrl = await readFileAsDataUrl(file);
+          const rawDataUrl = await readFileAsDataUrl(file);
+          const dataUrl = await compressImage(rawDataUrl);
           newAttachments.push({ name: file.name, content: dataUrl, type: "image", dataUrl });
         } catch {
           // skip
@@ -226,7 +257,8 @@ export default function MessageInput({
     for (const file of Array.from(files)) {
       if (file.type.startsWith("image/")) {
         try {
-          const dataUrl = await readFileAsDataUrl(file);
+          const rawDataUrl = await readFileAsDataUrl(file);
+          const dataUrl = await compressImage(rawDataUrl);
           newAttachments.push({ name: file.name, content: dataUrl, type: "image", dataUrl });
         } catch {
           // skip

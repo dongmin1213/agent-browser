@@ -12,6 +12,7 @@ interface MessageBubbleProps {
   toolResults: Map<string, ToolResultMessage>;
   messageIndex?: number;
   onBranch?: (messageIndex: number) => void;
+  onTogglePin?: (messageId: string) => void;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -65,6 +66,24 @@ function BranchButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+function PinButton({ pinned, onClick }: { pinned: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1 text-[11px] transition-colors py-1 ${
+        pinned ? "text-accent" : "text-text-muted hover:text-text-primary"
+      }`}
+      title={pinned ? "Unpin message" : "Pin message"}
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.5">
+        <path d="M9.5 2L14 6.5l-3 1-2.5 3L7 12l-1-2-3.5-1 3-2.5 1-3z" />
+        <path d="M5 11L2 14" />
+      </svg>
+      {pinned ? "Pinned" : "Pin"}
+    </button>
+  );
+}
+
 // Detect image URLs in text
 function renderContentWithImages(content: string) {
   const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
@@ -91,9 +110,10 @@ export default function MessageBubble({
   toolResults,
   messageIndex,
   onBranch,
+  onTogglePin,
 }: MessageBubbleProps) {
-  // ---- Plan approval (handled by ChatArea directly) ----
-  if (message.role === "plan_approval") {
+  // ---- Plan approval & Ask user (handled by ChatArea directly) ----
+  if (message.role === "plan_approval" || message.role === "ask_user") {
     return null;
   }
 
@@ -127,10 +147,15 @@ export default function MessageBubble({
               {message.content}
             </p>
           </div>
-          {/* Branch button on hover */}
-          {onBranch && messageIndex !== undefined && (
-            <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity mt-1 flex justify-end">
-              <BranchButton onClick={() => onBranch(messageIndex)} />
+          {/* Action buttons on hover */}
+          {(onBranch || onTogglePin) && (
+            <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity mt-1 flex justify-end items-center gap-3">
+              {onTogglePin && (
+                <PinButton pinned={!!message.pinned} onClick={() => onTogglePin(message.id)} />
+              )}
+              {onBranch && messageIndex !== undefined && (
+                <BranchButton onClick={() => onBranch(messageIndex)} />
+              )}
             </div>
           )}
         </div>
@@ -195,6 +220,9 @@ export default function MessageBubble({
           {!message.isStreaming && message.content && (
             <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity mt-1 flex items-center gap-3">
               <CopyButton text={message.content} />
+              {onTogglePin && (
+                <PinButton pinned={!!message.pinned} onClick={() => onTogglePin(message.id)} />
+              )}
               {onBranch && messageIndex !== undefined && (
                 <BranchButton onClick={() => onBranch(messageIndex)} />
               )}

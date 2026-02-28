@@ -109,50 +109,96 @@ export default memo(function PreviewPanel({ cwd, appSettings }: PreviewPanelProp
       .catch(() => setDetecting(false));
   }, [cwd]);
 
-  // ---- SSE log subscription (dev server) ----
+  // ---- SSE log subscription (dev server) with backoff reconnect ----
   useEffect(() => {
     if (serverState.status !== "starting" && serverState.status !== "running") {
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
       return;
     }
-    const es = new EventSource(`/api/dev-server-logs?cwd=${encodeURIComponent(cwd)}`);
-    eventSourceRef.current = es;
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "log" && data.text) setLogs((prev) => prev.length >= 500 ? [...prev.slice(-200), data.text] : [...prev, data.text]);
-        if (data.type === "status") {
-          setServerState((prev) => ({ ...prev, status: data.status, url: data.url || prev.url, error: data.error || null }));
-          if (data.status === "running") setActiveView("preview");
+    let cancelled = false;
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (cancelled) return;
+      const es = new EventSource(`/api/dev-server-logs?cwd=${encodeURIComponent(cwd)}`);
+      eventSourceRef.current = es;
+      es.onopen = () => { retryCount = 0; };
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "log" && data.text) setLogs((prev) => prev.length >= 500 ? [...prev.slice(-200), data.text] : [...prev, data.text]);
+          if (data.type === "status") {
+            setServerState((prev) => ({ ...prev, status: data.status, url: data.url || prev.url, error: data.error || null }));
+            if (data.status === "running") setActiveView("preview");
+          }
+        } catch { /* ignore */ }
+      };
+      es.onerror = () => {
+        es.close();
+        if (cancelled) return;
+        if (retryCount < 5) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 16000);
+          retryCount++;
+          retryTimer = setTimeout(connect, delay);
         }
-      } catch { /* ignore */ }
+      };
+    }
+
+    connect();
+    return () => {
+      cancelled = true;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-    es.onerror = () => {};
-    return () => { es.close(); eventSourceRef.current = null; };
   }, [cwd, serverState.status]);
 
-  // ---- SSE log subscription (scrcpy) ----
+  // ---- SSE log subscription (scrcpy) with backoff reconnect ----
   useEffect(() => {
     if (scrcpyState.status !== "starting" && scrcpyState.status !== "running") {
       scrcpyEsRef.current?.close();
       scrcpyEsRef.current = null;
       return;
     }
-    const es = new EventSource("/api/scrcpy");
-    scrcpyEsRef.current = es;
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "log" && data.text) setScrcpyLogs((prev) => prev.length >= 300 ? [...prev.slice(-100), data.text] : [...prev, data.text]);
-        if (data.type === "status") {
-          setScrcpyState((prev) => ({ ...prev, status: data.status, url: data.url || prev.url, error: data.error || null }));
-          if (data.status === "running") setDeviceView("mirror");
+    let cancelled = false;
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (cancelled) return;
+      const es = new EventSource("/api/scrcpy");
+      scrcpyEsRef.current = es;
+      es.onopen = () => { retryCount = 0; };
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "log" && data.text) setScrcpyLogs((prev) => prev.length >= 300 ? [...prev.slice(-100), data.text] : [...prev, data.text]);
+          if (data.type === "status") {
+            setScrcpyState((prev) => ({ ...prev, status: data.status, url: data.url || prev.url, error: data.error || null }));
+            if (data.status === "running") setDeviceView("mirror");
+          }
+        } catch { /* ignore */ }
+      };
+      es.onerror = () => {
+        es.close();
+        if (cancelled) return;
+        if (retryCount < 5) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount), 16000);
+          retryCount++;
+          retryTimer = setTimeout(connect, delay);
         }
-      } catch { /* ignore */ }
+      };
+    }
+
+    connect();
+    return () => {
+      cancelled = true;
+      scrcpyEsRef.current?.close();
+      scrcpyEsRef.current = null;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-    es.onerror = () => {};
-    return () => { es.close(); scrcpyEsRef.current = null; };
   }, [scrcpyState.status]);
 
   // ---- Check scrcpy status + auto-refresh devices on device mode ----

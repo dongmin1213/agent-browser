@@ -5,6 +5,10 @@ import { tmpdir } from "os";
 
 export const runtime = "nodejs";
 
+// Allow up to 20MB for image uploads
+export const maxDuration = 30;
+export const dynamic = "force-dynamic";
+
 export async function POST(request: NextRequest) {
   try {
     const { images, cwd } = (await request.json()) as {

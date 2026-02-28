@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useMemo } from "react";
-import type { UIMessage, ToolResultMessage } from "@/types/chat";
+import { useEffect, useRef, useMemo, useState } from "react";
+import type { UIMessage, ToolResultMessage, ToolUseMessage } from "@/types/chat";
 import MessageBubble from "./MessageBubble";
+import ToolBlock from "./ToolBlock";
 
 const SUGGESTED_PROMPTS = [
   { icon: "\uD83D\uDCDD", label: "Explain this codebase", prompt: "Read the project structure and give me a high-level overview of this codebase." },
@@ -20,6 +21,171 @@ interface ChatAreaProps {
   chatDuration?: number;
 }
 
+// =========================================
+// ToolGroup: collapsible group of consecutive tool messages
+// =========================================
+
+interface ToolGroupProps {
+  toolMessages: UIMessage[];
+  toolResults: Map<string, ToolResultMessage>;
+  hasRunningTool: boolean;
+}
+
+function ToolGroup({ toolMessages, toolResults, hasRunningTool }: ToolGroupProps) {
+  // Auto-expand if a tool is currently running
+  const [expanded, setExpanded] = useState(false);
+
+  // Count tool_use messages (not tool_result)
+  const toolUses = toolMessages.filter((m) => m.role === "tool_use") as ToolUseMessage[];
+  const toolCount = toolUses.length;
+  const hasError = toolUses.some((t) => {
+    const result = toolResults.get(t.toolUseId);
+    return result?.isError;
+  });
+
+  // Generate summary of tool names
+  const toolNameCounts = new Map<string, number>();
+  for (const t of toolUses) {
+    toolNameCounts.set(t.toolName, (toolNameCounts.get(t.toolName) || 0) + 1);
+  }
+  const summaryParts: string[] = [];
+  for (const [name, count] of toolNameCounts) {
+    summaryParts.push(count > 1 ? `${name} ×${count}` : name);
+  }
+  const summary = summaryParts.join(", ");
+
+  // If only 1 tool use, don't show group wrapper — just render inline
+  if (toolCount <= 1) {
+    return (
+      <>
+        {toolMessages.map((msg) => {
+          if (msg.role === "tool_use") {
+            const toolMsg = msg as ToolUseMessage;
+            const result = toolResults.get(toolMsg.toolUseId);
+            return (
+              <div key={msg.id} className="mb-1">
+                <ToolBlock
+                  toolName={toolMsg.toolName}
+                  input={toolMsg.input}
+                  isRunning={toolMsg.isRunning}
+                  result={result ? { content: result.content, isError: result.isError } : null}
+                />
+              </div>
+            );
+          }
+          // Skip tool_result (already merged into ToolBlock via toolResults map)
+          return null;
+        })}
+      </>
+    );
+  }
+
+  // Show running tools always expanded
+  const isExpanded = expanded || hasRunningTool;
+
+  return (
+    <div className="my-2">
+      {/* Group header - collapsible toggle */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 py-1 px-2 w-full text-left border-l-2 border-accent/30 hover:border-accent/60 hover:bg-bg-hover/50 transition-colors rounded-r-sm group"
+      >
+        {/* Status icon */}
+        {hasRunningTool ? (
+          <span className="w-3 h-3 border-[1.5px] border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        ) : hasError ? (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-error flex-shrink-0">
+            <path d="M4 4l8 8M12 4l-8 8" />
+          </svg>
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-success flex-shrink-0">
+            <path d="M3 8.5l3.5 3.5L13 4" />
+          </svg>
+        )}
+
+        <span className="text-[11px] text-text-muted">
+          {toolCount} tool uses
+        </span>
+        <span className="text-[11px] text-text-secondary font-mono truncate">
+          {summary}
+        </span>
+
+        {/* Expand/collapse chevron */}
+        <svg
+          width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"
+          className={`flex-shrink-0 text-text-muted ml-auto transition-transform ${isExpanded ? "rotate-180" : ""}`}
+        >
+          <path d="M3 4l2 2 2-2" />
+        </svg>
+      </button>
+
+      {/* Expanded: show individual tool blocks */}
+      {isExpanded && (
+        <div className="ml-3 mt-1 space-y-0.5">
+          {toolMessages.map((msg) => {
+            if (msg.role === "tool_use") {
+              const toolMsg = msg as ToolUseMessage;
+              const result = toolResults.get(toolMsg.toolUseId);
+              return (
+                <ToolBlock
+                  key={msg.id}
+                  toolName={toolMsg.toolName}
+                  input={toolMsg.input}
+                  isRunning={toolMsg.isRunning}
+                  result={result ? { content: result.content, isError: result.isError } : null}
+                />
+              );
+            }
+            return null;
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =========================================
+// Group messages into segments: text messages vs tool groups
+// =========================================
+
+type MessageSegment =
+  | { type: "message"; msg: UIMessage; index: number }
+  | { type: "toolgroup"; messages: UIMessage[]; startIndex: number };
+
+function groupMessages(messages: UIMessage[]): MessageSegment[] {
+  const segments: MessageSegment[] = [];
+  let currentToolGroup: UIMessage[] | null = null;
+  let toolGroupStart = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === "tool_use" || msg.role === "tool_result") {
+      if (!currentToolGroup) {
+        currentToolGroup = [];
+        toolGroupStart = i;
+      }
+      currentToolGroup.push(msg);
+    } else {
+      // Flush current tool group
+      if (currentToolGroup) {
+        segments.push({ type: "toolgroup", messages: currentToolGroup, startIndex: toolGroupStart });
+        currentToolGroup = null;
+      }
+      segments.push({ type: "message", msg, index: i });
+    }
+  }
+  // Flush remaining tool group
+  if (currentToolGroup) {
+    segments.push({ type: "toolgroup", messages: currentToolGroup, startIndex: toolGroupStart });
+  }
+
+  return segments;
+}
+
+// =========================================
+// ChatArea
+// =========================================
+
 export default function ChatArea({ messages, isLoading, onSendPrompt, onBranchChat, chatCost, chatDuration }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -36,6 +202,8 @@ export default function ChatArea({ messages, isLoading, onSendPrompt, onBranchCh
     }
     return map;
   }, [messages]);
+
+  const segments = useMemo(() => groupMessages(messages), [messages]);
 
   // Empty state with suggested prompts
   if (messages.length === 0 && !isLoading) {
@@ -70,40 +238,43 @@ export default function ChatArea({ messages, isLoading, onSendPrompt, onBranchCh
   return (
     <div className="flex-1 overflow-y-auto px-4 py-6">
       <div className="max-w-3xl mx-auto">
-        {messages.map((msg, index) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            toolResults={toolResults}
-            messageIndex={index}
-            onBranch={onBranchChat}
-          />
-        ))}
+        {segments.map((segment, i) => {
+          if (segment.type === "message") {
+            return (
+              <MessageBubble
+                key={segment.msg.id}
+                message={segment.msg}
+                toolResults={toolResults}
+                messageIndex={segment.index}
+                onBranch={onBranchChat}
+              />
+            );
+          }
+          // Tool group
+          const hasRunningTool = segment.messages.some(
+            (m) => m.role === "tool_use" && (m as ToolUseMessage).isRunning
+          );
+          return (
+            <ToolGroup
+              key={`toolgroup-${i}`}
+              toolMessages={segment.messages}
+              toolResults={toolResults}
+              hasRunningTool={hasRunningTool}
+            />
+          );
+        })}
 
         {/* Contextual activity indicator */}
         {isLoading && messages.length > 0 && (() => {
           const last = messages[messages.length - 1];
           const isStreaming = last.role === "assistant" && (last as { isStreaming?: boolean }).isStreaming;
           const isToolRunning = last.role === "tool_use" && (last as { isRunning?: boolean }).isRunning;
-          // Don't show if already streaming text or tool spinner is visible
           if (isStreaming || isToolRunning) return null;
-
-          // Determine contextual status message
-          let statusText = "Thinking...";
-          if (last.role === "user") {
-            statusText = "Thinking...";
-          } else if (last.role === "tool_result") {
-            statusText = "Thinking...";
-          } else if (last.role === "tool_use" && !(last as { isRunning?: boolean }).isRunning) {
-            statusText = "Thinking...";
-          } else if (last.role === "assistant" && !(last as { isStreaming?: boolean }).isStreaming) {
-            statusText = "Thinking...";
-          }
 
           return (
             <div className="flex items-center gap-2 mb-4 px-1 py-2">
               <span className="w-3 h-3 border-[1.5px] border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
-              <span className="text-xs text-text-muted">{statusText}</span>
+              <span className="text-xs text-text-muted">Thinking...</span>
             </div>
           );
         })()}
